@@ -41,7 +41,7 @@ from boto import ec2
 DEFAULT_SPARK_VERSION = "1.1.0"
 
 # A URL prefix from which to fetch AMI information
-AMI_PREFIX = "https://raw.github.com/mesos/spark-ec2/v2/ami-list"
+AMI_PREFIX = "http://raw.github.com/mesos/spark-ec2/v2/ami-list"
 
 
 class UsageError(Exception):
@@ -161,6 +161,10 @@ def parse_args():
     parser.add_option(
         "--copy-aws-credentials", action="store_true", default=False,
         help="Add AWS credentials to hadoop configuration to allow Spark to access S3")
+    parser.add_option("--subnet-id", default=None,
+        help="VPC Subnet id where to launch instances")
+    parser.add_option("--vpc-id", default=None,
+        help="VPC ID where to launch instances")
 
     (opts, args) = parser.parse_args()
     if len(args) != 2:
@@ -242,11 +246,11 @@ def get_spark_ami(opts):
     instance_types = {
         "c1.medium":   "pvm",
         "c1.xlarge":   "pvm",
-        "c3.2xlarge":  "pvm",
-        "c3.4xlarge":  "pvm",
-        "c3.8xlarge":  "pvm",
-        "c3.large":    "pvm",
-        "c3.xlarge":   "pvm",
+        "c3.2xlarge":  "hvm",
+        "c3.4xlarge":  "hvm",
+        "c3.8xlarge":  "hvm",
+        "c3.large":    "hvm",
+        "c3.xlarge":   "hvm",
         "cc1.4xlarge": "hvm",
         "cc2.8xlarge": "hvm",
         "cg1.4xlarge": "hvm",
@@ -322,8 +326,13 @@ def launch_cluster(conn, opts, cluster_name):
         slave_group = get_or_make_group(conn, opts.security_group_prefix + "-slaves")
     authorized_address = opts.authorized_address
     if master_group.rules == []:  # Group was just now created
-        master_group.authorize(src_group=master_group)
-        master_group.authorize(src_group=slave_group)
+        if opts.vpc_id == None:
+          master_group.authorize(src_group=master_group)
+          master_group.authorize(src_group=slave_group)
+        else:
+          master_group.authorize(ip_protocol='icmp',from_port=-1,to_port=-1,src_group=slave_group)
+          master_group.authorize(ip_protocol='tcp',from_port=0,to_port=65535,src_group=master_group)
+          master_group.authorize(ip_protocol='tcp',from_port=0,to_port=65535,src_group=slave_group)
         master_group.authorize('tcp', 22, 22, authorized_address)
         master_group.authorize('tcp', 8080, 8081, authorized_address)
         master_group.authorize('tcp', 18080, 18080, authorized_address)
@@ -335,8 +344,13 @@ def launch_cluster(conn, opts, cluster_name):
         if opts.ganglia:
             master_group.authorize('tcp', 5080, 5080, authorized_address)
     if slave_group.rules == []:  # Group was just now created
-        slave_group.authorize(src_group=master_group)
-        slave_group.authorize(src_group=slave_group)
+        if opts.vpc_id == None:
+          slave_group.authorize(src_group=master_group)
+          slave_group.authorize(src_group=slave_group)
+        else:
+          slave_group.authorize(ip_protocol='icmp',from_port=-1,to_port=-1,src_group=master_group)
+          slave_group.authorize(ip_protocol='tcp',from_port=0,to_port=65535,src_group=master_group)
+          slave_group.authorize(ip_protocol='tcp',from_port=0,to_port=65535,src_group=slave_group)
         slave_group.authorize('tcp', 22, 22, authorized_address)
         slave_group.authorize('tcp', 8080, 8081, authorized_address)
         slave_group.authorize('tcp', 50060, 50060, authorized_address)
@@ -399,6 +413,11 @@ def launch_cluster(conn, opts, cluster_name):
         my_req_ids = []
         for zone in zones:
             num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
+            interface = boto.ec2.networkinterface.NetworkInterfaceSpecification(
+                  subnet_id=opts.subnet_id,
+                  groups=[slave_group.id],
+                  associate_public_ip_address=False)
+            interfaces = boto.ec2.networkinterface.NetworkInterfaceCollection(interface)
             slave_reqs = conn.request_spot_instances(
                 price=opts.spot_price,
                 image_id=opts.ami,
@@ -409,7 +428,8 @@ def launch_cluster(conn, opts, cluster_name):
                 security_groups=[slave_group] + additional_groups,
                 instance_type=opts.instance_type,
                 block_device_map=block_map,
-                user_data=user_data_content)
+                user_data=user_data_content,
+                network_interfaces = interfaces)
             my_req_ids += [req.id for req in slave_reqs]
             i += 1
 
@@ -458,14 +478,20 @@ def launch_cluster(conn, opts, cluster_name):
         for zone in zones:
             num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
             if num_slaves_this_zone > 0:
-                slave_res = image.run(key_name=opts.key_pair,
-                                      security_groups=[slave_group] + additional_groups,
+                interface = boto.ec2.networkinterface.NetworkInterfaceSpecification(
+                      subnet_id=opts.subnet_id,
+                      groups=[slave_group.id],
+                      associate_public_ip_address=False)
+                interfaces = boto.ec2.networkinterface.NetworkInterfaceCollection(interface)
+                slave_res = image.connection.run_instances(image.id, key_name=opts.key_pair,
+                                      #security_groups=[slave_group] + additional_groups,
                                       instance_type=opts.instance_type,
                                       placement=zone,
                                       min_count=num_slaves_this_zone,
                                       max_count=num_slaves_this_zone,
                                       block_device_map=block_map,
-                                      user_data=user_data_content)
+                                      user_data=user_data_content,
+                                      network_interfaces = interfaces)
                 slave_nodes += slave_res.instances
                 print "Launched %d slaves in %s, regid = %s" % (num_slaves_this_zone,
                                                                 zone, slave_res.id)
@@ -484,14 +510,20 @@ def launch_cluster(conn, opts, cluster_name):
             master_type = opts.instance_type
         if opts.zone == 'all':
             opts.zone = random.choice(conn.get_all_zones()).name
-        master_res = image.run(key_name=opts.key_pair,
-                               security_groups=[master_group] + additional_groups,
+        interface = boto.ec2.networkinterface.NetworkInterfaceSpecification(
+            subnet_id=opts.subnet_id,
+            groups=[master_group.id],
+            associate_public_ip_address=False)
+        interfaces = boto.ec2.networkinterface.NetworkInterfaceCollection(interface)  
+        master_res = image.connection.run_instances(image.id, key_name=opts.key_pair,
+                               #security_groups=[master_group] + additional_groups,
                                instance_type=master_type,
                                placement=opts.zone,
                                min_count=1,
                                max_count=1,
                                block_device_map=block_map,
-                               user_data=user_data_content)
+                               user_data=user_data_content,
+                               network_interfaces = interfaces)
         master_nodes = master_res.instances
         print "Launched master in %s, regid = %s" % (zone, master_res.id)
 
@@ -568,7 +600,7 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
 
 
 def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
-    master = master_nodes[0].public_dns_name
+    master = master_nodes[0].private_ip_address
     if deploy_ssh_key:
         print "Generating cluster's SSH key on master..."
         key_setup = """
@@ -580,8 +612,8 @@ def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
         dot_ssh_tar = ssh_read(master, opts, ['tar', 'c', '.ssh'])
         print "Transferring cluster's SSH key to slaves..."
         for slave in slave_nodes:
-            print slave.public_dns_name
-            ssh_write(slave.public_dns_name, opts, ['tar', 'x'], dot_ssh_tar)
+            print slave.private_ip_address
+            ssh_write(slave.private_ip_address, opts, ['tar', 'x'], dot_ssh_tar)
 
     modules = ['spark', 'shark', 'ephemeral-hdfs', 'persistent-hdfs',
                'mapreduce', 'spark-standalone', 'tachyon']
@@ -594,7 +626,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
 
     # NOTE: We should clone the repository before running deploy_files to
     # prevent ec2-variables.sh from being overwritten
-    ssh(master, opts, "rm -rf spark-ec2 && git clone https://github.com/mesos/spark-ec2.git -b v3")
+    ssh(master, opts, "rm -rf spark-ec2 && git clone http://github.com/mesos/spark-ec2.git -b v3")
 
     print "Deploying files to master..."
     deploy_files(conn, "deploy.generic", opts, master_nodes, slave_nodes, modules)
@@ -605,7 +637,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
 
 
 def setup_standalone_cluster(master, slave_nodes, opts):
-    slave_ips = '\n'.join([i.public_dns_name for i in slave_nodes])
+    slave_ips = '\n'.join([i.private_ip_address for i in slave_nodes])
     ssh(master, opts, "echo \"%s\" > spark/conf/slaves" % (slave_ips))
     ssh(master, opts, "/root/spark/sbin/start-all.sh")
 
@@ -685,7 +717,7 @@ def get_num_disks(instance_type):
 # the first master instance in the cluster, and we expect the setup
 # script to be run on that instance to copy them to other nodes.
 def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, modules):
-    active_master = master_nodes[0].public_dns_name
+    active_master = master_nodes[0].private_ip_address
 
     num_disks = get_num_disks(opts.instance_type)
     hdfs_data_dirs = "/mnt/ephemeral-hdfs/data"
@@ -709,9 +741,9 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, modules):
         modules = filter(lambda x: x != "shark", modules)
 
     template_vars = {
-        "master_list": '\n'.join([i.public_dns_name for i in master_nodes]),
+        "master_list": '\n'.join([i.private_ip_address for i in master_nodes]),
         "active_master": active_master,
-        "slave_list": '\n'.join([i.public_dns_name for i in slave_nodes]),
+        "slave_list": '\n'.join([i.private_ip_address for i in slave_nodes]),
         "cluster_url": cluster_url,
         "hdfs_data_dirs": hdfs_data_dirs,
         "mapred_local_dirs": mapred_local_dirs,
@@ -899,7 +931,7 @@ def real_main():
         (master_nodes, slave_nodes) = get_existing_cluster(
             conn, opts, cluster_name, die_on_error=False)
         for inst in master_nodes + slave_nodes:
-            print "> %s" % inst.public_dns_name
+            print "> %s" % inst.private_ip_address
 
         msg = "ALL DATA ON ALL NODES WILL BE LOST!!\nDestroy cluster %s (y/N): " % cluster_name
         response = raw_input(msg)
@@ -960,7 +992,7 @@ def real_main():
 
     elif action == "login":
         (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
-        master = master_nodes[0].public_dns_name
+        master = master_nodes[0].private_ip_address
         print "Logging into master " + master + "..."
         proxy_opt = []
         if opts.proxy_port is not None:
@@ -984,7 +1016,7 @@ def real_main():
 
     elif action == "get-master":
         (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
-        print master_nodes[0].public_dns_name
+        print master_nodes[0].private_ip_address
 
     elif action == "stop":
         response = raw_input(
