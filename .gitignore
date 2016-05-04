@@ -12,6 +12,8 @@
 build/*.jar
 .settings
 .cache
+.cache-main
+.cache-tests
 cache
 .generated-mima*
 work/
