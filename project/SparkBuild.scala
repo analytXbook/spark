@@ -43,9 +43,9 @@ object BuildCommons {
       "streaming-zeromq", "launcher", "unsafe", "test-tags").map(ProjectRef(buildLocation, _))
 
   val optionallyEnabledProjects@Seq(yarn, java8Tests, sparkGangliaLgpl,
-    streamingKinesisAsl, dockerIntegrationTests) =
+    streamingKinesisAsl, dockerIntegrationTests, flare) =
     Seq("yarn", "java8-tests", "ganglia-lgpl", "streaming-kinesis-asl",
-      "docker-integration-tests").map(ProjectRef(buildLocation, _))
+      "docker-integration-tests", "flare").map(ProjectRef(buildLocation, _))
 
   val assemblyProjects@Seq(assembly, examples, networkYarn, streamingFlumeAssembly, streamingKafkaAssembly, streamingMqttAssembly, streamingKinesisAslAssembly) =
     Seq("assembly", "examples", "network-yarn", "streaming-flume-assembly", "streaming-kafka-assembly", "streaming-mqtt-assembly", "streaming-kinesis-asl-assembly")

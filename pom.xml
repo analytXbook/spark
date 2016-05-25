@@ -641,6 +641,11 @@
         </exclusions>
       </dependency>
       <dependency>
+         <groupId>org.jgroups</groupId>
+         <artifactId>jgroups</artifactId>
+         <version>3.6.9.Final</version>
+      </dependency>
+      <dependency>
         <groupId>org.roaringbitmap</groupId>
         <artifactId>RoaringBitmap</artifactId>
         <version>0.5.11</version>
@@ -2554,6 +2559,13 @@
         <scala.version>2.11.7</scala.version>
         <scala.binary.version>2.11</scala.binary.version>
       </properties>
+    </profile>
+
+    <profile>
+      <id>flare</id>
+      <modules>
+        <module>flare</module>
+      </modules>
     </profile>
 
     <!--
