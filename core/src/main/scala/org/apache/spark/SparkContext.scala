@@ -2731,6 +2731,32 @@ object SparkContext extends Logging {
           "in the form mesos://zk://host:port. Current Master URL will stop working in Spark 2.0.")
         createTaskScheduler(sc, "mesos://" + zkUrl)
 
+      case FLARE_REGEX(flareUrl) =>
+        val schedulerClazz = Utils.classForName("org.apache.spark.scheduler.flare.FlareScheduler")
+        val scheduler = try {
+          val cons = schedulerClazz.getConstructor(classOf[SparkContext])
+          cons.newInstance(sc).asInstanceOf[TaskScheduler]
+        } catch {
+          // TODO: Enumerate the exact reasons why it can fail
+          // But irrespective of it, it means we cannot proceed !
+          case e: Exception => {
+            throw new SparkException("Flare mode not available", e)
+          }
+        }
+
+        val backend = try {
+          val clazz =
+            Utils.classForName("org.apache.spark.scheduler.flare.FlareSchedulerBackend")
+          val cons = clazz.getConstructor(schedulerClazz, classOf[String])
+          cons.newInstance(scheduler, flareUrl).asInstanceOf[SchedulerBackend]
+        } catch {
+          case e: Exception => {
+            throw new SparkException("Flare mode not available", e)
+          }
+        }
+
+        (backend, scheduler)
+
       case _ =>
         throw new SparkException("Could not parse Master URL: '" + master + "'")
     }
@@ -2753,6 +2779,8 @@ private object SparkMasterRegex {
   val MESOS_REGEX = """mesos://(.*)""".r
   // Regular expression for connection to Simr cluster
   val SIMR_REGEX = """simr://(.*)""".r
+  // Regular expression for connection using flare
+  val FLARE_REGEX = """flare://(.*)""".r
 }
 
 /**
