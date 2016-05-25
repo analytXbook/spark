@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.reflect.ClassTag
 
 import org.apache.spark._
-import org.apache.spark.util.Utils
+import org.apache.spark.util.{EncodedId, Utils}
 
 private[spark] class BroadcastManager(
     val isDriver: Boolean,
@@ -58,9 +58,11 @@ private[spark] class BroadcastManager(
   }
 
   private val nextBroadcastId = new AtomicLong(0)
+  
+  def newBroadcastId = EncodedId.encodeIfEnabled(nextBroadcastId.incrementAndGet())
 
   def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean): Broadcast[T] = {
-    broadcastFactory.newBroadcast[T](value_, isLocal, nextBroadcastId.getAndIncrement())
+    broadcastFactory.newBroadcast[T](value_, isLocal, newBroadcastId)
   }
 
   def unbroadcast(id: Long, removeFromDriver: Boolean, blocking: Boolean) {
