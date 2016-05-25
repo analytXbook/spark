@@ -2100,12 +2100,12 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
 
   private val nextShuffleId = new AtomicInteger(0)
 
-  private[spark] def newShuffleId(): Int = nextShuffleId.getAndIncrement()
+  private[spark] def newShuffleId(): Int = EncodedId.encodeIfEnabled(nextShuffleId.getAndIncrement)
 
   private val nextRddId = new AtomicInteger(0)
 
   /** Register a new RDD, returning its RDD ID */
-  private[spark] def newRddId(): Int = nextRddId.getAndIncrement()
+  private[spark] def newRddId(): Int = EncodedId.encodeIfEnabled(nextRddId.getAndIncrement)
 
   /**
    * Registers listeners specified in spark.extraListeners, then starts the listener bus.
