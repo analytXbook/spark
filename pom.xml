@@ -2459,6 +2459,13 @@
       </properties>
     </profile>
 
+    <profile>
+      <id>flare</id>
+      <modules>
+        <module>flare</module>
+      </modules>
+    </profile>
+
     <!--
       These empty profiles are available in some sub-modules. Declare them here so that
       maven does not complain when they're provided on the command line for a sub-module
