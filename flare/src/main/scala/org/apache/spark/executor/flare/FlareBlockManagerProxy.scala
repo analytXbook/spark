@@ -1,7 +1,7 @@
 package org.apache.spark.executor.flare
 
 import org.apache.spark.flare.FlareCluster
-import org.apache.spark.rpc.{RpcCallContext, RpcEnv}
+import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv}
 import org.apache.spark.storage.BlockManagerMessages._
 import org.apache.spark.storage._
 import org.apache.spark.{Logging, SparkException}
@@ -26,11 +26,17 @@ private[spark] class FlareBlockManagerProxy(
       case _ => throw new SparkException(s"Unknown blockId type: $blockId")
     }
   }
-  
+
+  var slaveRef: RpcEndpointRef = _
+
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
     case _registerBlockManager @ RegisterBlockManager(blockManagerId, maxMemSize, slaveEndpoint) => {
+      slaveRef = slaveEndpoint
+
+      logInfo(s"Setting up this proxy endpoint as BlockManagerSlave endpoint: ${slaveEndpoint.name}")
+      rpcEnv.setupEndpoint(slaveEndpoint.name, this)
       context.reply(true)
-      
+
       driverRefs.foreach {
         case (driverId, rpcRef) => rpcRef.ask[Boolean](_registerBlockManager) onComplete {
           case Success(registered) => 
@@ -71,7 +77,14 @@ private[spark] class FlareBlockManagerProxy(
       pipe(_getPeers, driverRefs.head._2, context)
     }
 
-    case msg => logInfo(s"Unhandled Block Manager master message: $msg")
+    case slaveMsg: ToBlockManagerSlave => {
+      if (slaveRef == null) {
+        throw new SparkException("Received message for slave without slave registered")
+      }
+      pipe(slaveMsg, slaveRef, context)
+    }
+
+    case msg => logWarning(s"Unhandled Block Manager message: $msg")
   }
   
 }
