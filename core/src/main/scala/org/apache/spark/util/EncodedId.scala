@@ -23,9 +23,9 @@ private[spark] object EncodedId {
   private var data: Int = _
 
   private var _enabled = false
-  def enabled = _enabled
+  def enabled: Boolean = _enabled
 
-  def enable(data: Int) = {
+  def enable(data: Int): Unit = {
     EncodedId.data = data
     _enabled = true
   }
@@ -33,8 +33,8 @@ private[spark] object EncodedId {
   def encode(value: Int): Int = (value << DATA_BITS) | data
   def encode(value: Long): Long = (value << DATA_BITS) | data
 
-  def encodeIfEnabled(value: Int) = if (enabled) encode(value) else value
-  def encodeIfEnabled(value: Long) = if (enabled) encode(value) else value
+  def encodeIfEnabled(value: Int): Int = if (enabled) encode(value) else value
+  def encodeIfEnabled(value: Long): Long = if (enabled) encode(value) else value
 
   def decode(value: Int): (Int, Int) = (value & DATA_MASK, value >> DATA_BITS)
   def decode(value: Long): (Int, Long) = ((value & DATA_MASK).toInt, value >> DATA_BITS)
