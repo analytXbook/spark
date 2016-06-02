@@ -25,7 +25,8 @@ import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, RpcEndpoint
 private[spark] sealed trait OutputCommitCoordinationMessage extends Serializable
 
 private[spark] case object StopCoordinator extends OutputCommitCoordinationMessage
-private[spark] case class AskPermissionToCommitOutput(stage: Int, partition: Int, attemptNumber: Int)
+private[spark] case class AskPermissionToCommitOutput(
+  stage: Int, partition: Int, attemptNumber: Int)
 
 /**
  * Authority that decides whether tasks can commit output to HDFS. Uses a "first committer wins"
