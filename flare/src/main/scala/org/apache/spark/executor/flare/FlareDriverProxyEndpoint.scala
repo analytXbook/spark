@@ -9,7 +9,7 @@ import scala.collection.mutable.HashMap
 import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
 
-abstract class FlareDriverProxyEndpoint(endpointName: String, cluster: FlareCluster) extends ThreadSafeRpcEndpoint with FlareClusterListener with Logging{
+private[spark] abstract class FlareDriverProxyEndpoint(endpointName: String, cluster: FlareCluster) extends ThreadSafeRpcEndpoint with FlareClusterListener with Logging{
   protected implicit val ec = FlareDriverProxyEndpoint.executionContext
   
   protected val driverRefs = new HashMap[Int, RpcEndpointRef]()
@@ -46,7 +46,7 @@ abstract class FlareDriverProxyEndpoint(endpointName: String, cluster: FlareClus
   protected def driverId(encodedId: Int) = EncodedId.decode(encodedId)._1
 }
 
-object FlareDriverProxyEndpoint {
+private[spark] object FlareDriverProxyEndpoint {
   private val askThreadPool = ThreadUtils.newDaemonCachedThreadPool("flare-driver-proxy-thread-pool")
   implicit val executionContext = ExecutionContext.fromExecutorService(askThreadPool)
 }

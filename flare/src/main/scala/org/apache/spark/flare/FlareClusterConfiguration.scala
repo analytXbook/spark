@@ -2,7 +2,7 @@ package org.apache.spark.flare
 
 import org.apache.spark.{SparkConf, SparkException}
 
-case class FlareClusterConfiguration(
+private[spark] case class FlareClusterConfiguration(
   channelName: String,
   bindHostname: String,
   bindPort: Int,

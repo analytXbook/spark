@@ -7,7 +7,7 @@ import org.apache.spark.rpc._
 
 import scala.util.{Failure, Success}
 
-class FlareHeartbeatProxy(
+private[spark] class FlareHeartbeatProxy(
     cluster: FlareCluster,
     override val rpcEnv: RpcEnv)
   extends FlareDriverProxyEndpoint(HeartbeatReceiver.ENDPOINT_NAME, cluster) with Logging {

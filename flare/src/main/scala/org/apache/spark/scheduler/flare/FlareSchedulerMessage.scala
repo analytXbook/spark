@@ -5,12 +5,12 @@ import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.util.SerializableBuffer
 import java.nio.ByteBuffer
 
-case class FlareReservationId(stageId: Int, attemptId: Int, driverId: Int)
-case class FlareReservationGroupDescription(name: String, maxShare: Int, weight: Double)
+private[spark] case class FlareReservationId(stageId: Int, attemptId: Int, driverId: Int)
+private[spark] case class FlareReservationGroupDescription(name: String, maxShare: Int, weight: Double)
 
-sealed trait FlareMessage extends Serializable
+private[spark] sealed trait FlareMessage extends Serializable
 
-object FlareMessages {
+private[spark] object FlareMessages {
   case class FlareReservation(reservationId: FlareReservationId, count: Int, driverEndpoint: RpcEndpointRef, groups: Seq[FlareReservationGroupDescription]) extends FlareMessage
 
   case class RegisterExecutor(executorId: String, executorRef: RpcEndpointRef, cores: Int, logUrls: Map[String, String])

@@ -14,7 +14,7 @@ import org.apache.spark.util.logging.FileAppender
 
 import scala.collection.mutable.HashMap
 
-class FlareExecutorRunner(
+private[spark] class FlareExecutorRunner(
     val clusterConf: FlareClusterConfiguration,
     val executorId: String,
     val cores: Int,
@@ -35,7 +35,6 @@ class FlareExecutorRunner(
   private var shutdownHook: AnyRef = _
 
   @volatile var state: ExecutorState.Value = ExecutorState.LAUNCHING
-
 
   private def getCommand(): Command = {
     val args = Seq(

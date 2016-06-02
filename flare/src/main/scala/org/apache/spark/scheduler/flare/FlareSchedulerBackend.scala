@@ -9,7 +9,7 @@ import org.apache.spark.util.{AkkaUtils, EncodedId, SerializableBuffer}
 
 import scala.collection.mutable
 
-class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: String)
+private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: String)
   extends SchedulerBackend with FlareClusterListener with Logging {
 
   scheduler.initialize(this)

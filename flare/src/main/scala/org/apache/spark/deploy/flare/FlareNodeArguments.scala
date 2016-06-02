@@ -2,7 +2,7 @@ package org.apache.spark.deploy.flare
 
 import org.apache.spark.flare.FlareClusterConfiguration
 
-class FlareNodeArguments(args: Array[String]) {
+private[spark] class FlareNodeArguments(args: Array[String]) {
   var clusterUrl: String = null
   var workDir: String = null
   var bindHostname: String = FlareClusterConfiguration.DefaultBindHostname

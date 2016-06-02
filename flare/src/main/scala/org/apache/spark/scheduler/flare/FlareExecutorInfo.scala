@@ -3,7 +3,7 @@ package org.apache.spark.scheduler.flare
 import org.apache.spark.rpc.{RpcAddress, RpcEndpointRef}
 import org.apache.spark.scheduler.cluster.ExecutorInfo
 
-class FlareExecutorInfo(
+private[spark] class FlareExecutorInfo(
   val executorEndpoint: RpcEndpointRef,
   executorHost: String,
   totalCores: Int,

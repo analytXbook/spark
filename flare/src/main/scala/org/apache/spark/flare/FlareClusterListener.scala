@@ -1,6 +1,6 @@
 package org.apache.spark.flare
 
-trait FlareClusterListener {
+private[spark] trait FlareClusterListener {
   def onExecutorLaunched(executorLaunched: ExecutorLaunched): Unit = {}
   def onExecutorLost(executorLost: FlareExecutorLost): Unit = {}
   def onDriverJoined(driverJoined: DriverJoined): Unit = {}

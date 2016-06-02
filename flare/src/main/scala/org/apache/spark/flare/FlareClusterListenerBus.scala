@@ -4,7 +4,7 @@ package org.apache.spark.flare
 import org.apache.spark.util.AsynchronousListenerBus
 import org.apache.spark.flare._
 
-class FlareClusterListenerBus extends AsynchronousListenerBus[FlareClusterListener, FlareClusterEvent]("FlareClusterListenerBus") {
+private[spark] class FlareClusterListenerBus extends AsynchronousListenerBus[FlareClusterListener, FlareClusterEvent]("FlareClusterListenerBus") {
   override def onPostEvent(listener: FlareClusterListener, event: FlareClusterEvent): Unit = {
     event match {
       case executorLaunched: ExecutorLaunched => listener.onExecutorLaunched(executorLaunched)

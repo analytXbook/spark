@@ -22,6 +22,8 @@ import org.jgroups.protocols._
 import org.jgroups.stack.{IpAddress, ProtocolStack}
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
+
 private[spark] class FlareCluster(val conf: FlareClusterConfiguration) extends ReceiverAdapter with Logging {
   private val listenerBus = new FlareClusterListenerBus
   
@@ -38,6 +40,7 @@ private[spark] class FlareCluster(val conf: FlareClusterConfiguration) extends R
         .setValue("bind_addr", InetAddress.getByName(conf.bindHostname))
         .setValue("bind_port", conf.bindPort)
         .setValue("port_range", conf.portRange))
+      .addProtocol(new DAISYCHAIN())
       .addProtocol(new TCPPING()
         .setValue("initial_hosts", conf.initialMembers.map { case (host, port) => new IpAddress(host, port) }.asJava)
         .setValue("send_cache_on_join", true))
@@ -86,7 +89,7 @@ private[spark] class FlareCluster(val conf: FlareClusterConfiguration) extends R
           state.drivers -= driverId
           state.driverAddress -= address
         }
-        listenerBus.postToAll(DriverExited(driverId))
+        listenerBus.post(DriverExited(driverId))
       }
     }
     lastView = view
@@ -102,25 +105,25 @@ private[spark] class FlareCluster(val conf: FlareClusterConfiguration) extends R
       case executorLaunched @ ExecutorLaunched(executorId, hostname, port) => state.synchronized {
         logInfo(s"Executor Launched: $executorId")
         state.executors += (executorId -> FlareExecutorInfo(hostname, port))
-        listenerBus.postToAll(executorLaunched)
+        listenerBus.post(executorLaunched)
       }
 
       case executorLost @ FlareExecutorLost(executorId, time, reason) => state.synchronized {
         logInfo(s"Executor $executorId lost: $reason")
         state.executors -= executorId
-        listenerBus.postToAll(executorLost)
+        listenerBus.post(executorLost)
       }
       
       case driverJoined @ DriverJoined(driverId, hostname, port: Int) => state.synchronized {
         logInfo(s"Driver joined: $driverId")
         state.drivers += (driverId -> FlareDriverInfo(hostname, port))
         state.driverAddress += (msg.src -> driverId)
-        listenerBus.postToAll(driverJoined)
+        listenerBus.post(driverJoined)
       }
       case initialize @ Initialize(appId, properties) => state.synchronized {
         logInfo(s"Driver initialized cluster")
         state.initialize(appId, properties)
-        listenerBus.postToAll(initialize)
+        listenerBus.post(initialize)
       }
     }
   }
@@ -137,9 +140,14 @@ private[spark] class FlareCluster(val conf: FlareClusterConfiguration) extends R
     state.load(stateUpdate)
   }
   
-  def counter(name: String, initialValue: Long = 0l): Counter = 
+  def counter(name: String, initialValue: Long = 0l): Counter =
     counterService.getOrCreateCounter(name, initialValue)
-  
+
+  private val asyncCounters = new mutable.HashMap[String, AsyncCounter]
+
+  def asyncCounter(name: String, initialValue: Long = 0l): AsyncCounter =
+    asyncCounters.getOrElseUpdate(name, new AsyncCounter(counter(name, initialValue)))
+
   def addListener(listener: FlareClusterListener) = {
     listenerBus.addListener(listener)
   }
