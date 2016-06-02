@@ -58,8 +58,8 @@ private[spark] class BroadcastManager(
   }
 
   private val nextBroadcastId = new AtomicLong(0)
-  
-  def newBroadcastId = EncodedId.encodeIfEnabled(nextBroadcastId.incrementAndGet())
+
+  def newBroadcastId: Long = EncodedId.encodeIfEnabled(nextBroadcastId.incrementAndGet())
 
   def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean): Broadcast[T] = {
     broadcastFactory.newBroadcast[T](value_, isLocal, newBroadcastId)
