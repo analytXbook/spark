@@ -62,43 +62,53 @@ private[spark] class FlareReservationManager(
     runningTasksSet.remove(taskId)
   }
   
-  def executorFromHost(host: String): String = {
-    val executors = scheduler.executorsByHost(host)
-    executors(Random.nextInt(executors.length))
+  def executorFromHost(host: String): Option[String] = {
+    scheduler.executorsByHost.get(host).flatMap(executors =>
+      if (executors.isEmpty) None
+      else Some(executors(Random.nextInt(executors.length))))
   }
   
   def randomExecutor: String = {
     scheduler.executors(Random.nextInt(scheduler.executors.length))
   }
-     
+
   def getReservations: Map[String, Int] = {
     val reservations = new ListBuffer[String]
     for (index <- 0 until numTasks) {
       val task = tasks(index)
-      if (task.preferredLocations.isEmpty) 
+      if (task.preferredLocations.isEmpty)
         unlaunchedUnconstrainedTasks += index
       else {
-        var i = 0
-        val shuffledLocs = Random.shuffle(task.preferredLocations)
-        while (i <= probeRatio && i < shuffledLocs.size) {
-          val targetExecutorId = shuffledLocs(i) match {
-            case ExecutorCacheTaskLocation(host, executorId) => executorId
-            case taskLocation => executorFromHost(taskLocation.host)
+        //TODO: Improve fill logic for when executors can not be found or probeRatio not met
+        var placedTasks = 0
+        val locations = Random.shuffle(task.preferredLocations)
+        while (placedTasks <= probeRatio) {
+          val targetExecutor = {
+            if (placedTasks < locations.size) {
+              locations(placedTasks) match {
+                case ExecutorCacheTaskLocation(host, executorId) => executorId
+                case taskLocation => executorFromHost(taskLocation.host).getOrElse {
+                  logDebug(s"Could not find executor for host ${taskLocation.host}")
+                  randomExecutor
+                }
+              }
+            } else {
+              randomExecutor
+            }
           }
-          
-          unlaunchedConstrainedTasks.addBinding(targetExecutorId, index)
-          reservations += targetExecutorId
+          unlaunchedConstrainedTasks.addBinding(targetExecutor, index)
+          reservations += targetExecutor
+          placedTasks += 1
 
-          i += 1
         }
-      }      
+      }
     }
     
     val remainingReservations = Math.ceil(unlaunchedUnconstrainedTasks.size * probeRatio).toInt
     for (i <- 0 until remainingReservations) {
       reservations += randomExecutor
     }
-    
+
     reservations.groupBy(identity).mapValues(_.size)
   }
   
