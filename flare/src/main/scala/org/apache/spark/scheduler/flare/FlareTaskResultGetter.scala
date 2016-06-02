@@ -12,7 +12,7 @@ import org.apache.spark.util.Utils
 import scala.language.existentials
 
 
-class FlareTaskResultGetter(
+private[spark] class FlareTaskResultGetter(
     sparkEnv: SparkEnv, 
     scheduler: FlareScheduler) 
   extends Logging {

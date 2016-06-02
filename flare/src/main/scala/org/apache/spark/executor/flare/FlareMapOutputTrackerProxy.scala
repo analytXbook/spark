@@ -6,7 +6,7 @@ import org.apache.spark.rpc.{RpcCallContext, RpcEnv}
 
 import scala.util.{Failure, Success}
 
-class FlareMapOutputTrackerProxy(
+private[spark] class FlareMapOutputTrackerProxy(
     cluster: FlareCluster,
     override val rpcEnv: RpcEnv)
   extends FlareDriverProxyEndpoint(MapOutputTracker.ENDPOINT_NAME, cluster) with Logging {

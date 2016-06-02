@@ -20,7 +20,7 @@ import scala.collection.mutable
 import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
 
-class FlareExecutorBackend(
+private[spark] class FlareExecutorBackend(
     executorId: String,
     hostname: String,
     cores: Int,
@@ -124,7 +124,7 @@ class FlareExecutorBackend(
   }  
 }
 
-object FlareExecutorBackend extends Logging {
+private[spark] object FlareExecutorBackend extends Logging {
   val ENDPOINT_NAME = "Executor"
   val PROXY_PORT = 21000
   val EXECUTOR_PORT = 20000

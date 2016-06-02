@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
 import org.apache.spark.SparkException
 
 
-class FlareClusterState extends Serializable {
+private[spark] class FlareClusterState extends Serializable {
   val nodes = new ConcurrentHashMap[Address, FlareNodeInfo]().asScala
   val drivers = new ConcurrentHashMap[Int, FlareDriverInfo]().asScala
   val driverAddress = new ConcurrentHashMap[Address, Int]().asScala

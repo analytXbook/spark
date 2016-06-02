@@ -16,7 +16,7 @@
  */
 package org.apache.spark.util
 
-object EncodedId {
+private[spark] object EncodedId {
   private val DATA_BITS = 8
   private val DATA_MASK = ((1 << DATA_BITS) - 1)
 

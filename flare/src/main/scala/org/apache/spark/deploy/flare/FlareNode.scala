@@ -10,7 +10,7 @@ import org.apache.spark.flare.{FlareCluster, _}
 import org.apache.spark.util.SignalLogger
 import org.jgroups.blocks.atomic.Counter
 
-class FlareNode(
+private[spark] class FlareNode(
     clusterConf: FlareClusterConfiguration,
     workDirPath: Option[String])
   extends FlareClusterListener with Logging {

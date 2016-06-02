@@ -8,7 +8,7 @@ import org.apache.spark.scheduler.flare.FlareSchedulerBackend
 
 import scala.util.{Failure, Success}
 
-class FlareSchedulerProxy(
+private[spark] class FlareSchedulerProxy(
     cluster: FlareCluster,
     override val rpcEnv: RpcEnv)
   extends FlareDriverProxyEndpoint(FlareSchedulerBackend.ENDPOINT_NAME, cluster) with Logging {

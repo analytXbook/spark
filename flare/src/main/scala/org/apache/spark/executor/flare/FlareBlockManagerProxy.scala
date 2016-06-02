@@ -9,7 +9,7 @@ import org.apache.spark.{Logging, SparkException}
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
-class FlareBlockManagerProxy(
+private[spark] class FlareBlockManagerProxy(
     cluster: FlareCluster,
     override val rpcEnv: RpcEnv)
   extends FlareDriverProxyEndpoint(BlockManagerMaster.DRIVER_ENDPOINT_NAME, cluster) with Logging {
