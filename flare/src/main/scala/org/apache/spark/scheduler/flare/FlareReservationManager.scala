@@ -79,31 +79,23 @@ private[spark] class FlareReservationManager(
       if (task.preferredLocations.isEmpty)
         unlaunchedUnconstrainedTasks += index
       else {
-        //TODO: Improve fill logic for when executors can not be found or probeRatio not met
-        var placedTasks = 0
-        val locations = Random.shuffle(task.preferredLocations)
-        while (placedTasks <= probeRatio) {
-          val targetExecutor = {
-            if (placedTasks < locations.size) {
-              locations(placedTasks) match {
-                case ExecutorCacheTaskLocation(host, executorId) => executorId
-                case taskLocation => executorFromHost(taskLocation.host).getOrElse {
-                  logDebug(s"Could not find executor for host ${taskLocation.host}")
-                  randomExecutor
-                }
-              }
-            } else {
-              randomExecutor
-            }
-          }
-          unlaunchedConstrainedTasks.addBinding(targetExecutor, index)
-          reservations += targetExecutor
-          placedTasks += 1
+        val preferredExecutors = task.preferredLocations.flatMap {
+          case ExecutorCacheTaskLocation(host, executorId) => Some(executorId)
+          case taskLocation => executorFromHost(taskLocation.host)
+        }
 
+        if (preferredExecutors.isEmpty) {
+          logDebug(s"Could not match any preferred locations for task $index in stage ${task.stageId} to executor, treating as unconstrained")
+          unlaunchedUnconstrainedTasks += index
+        } else {
+          for (targetExecutor <- Random.shuffle(preferredExecutors.take(probeRatio.round.toInt))) {
+            unlaunchedConstrainedTasks.addBinding(targetExecutor, index)
+            reservations += targetExecutor
+          }
         }
       }
     }
-    
+
     val remainingReservations = Math.ceil(unlaunchedUnconstrainedTasks.size * probeRatio).toInt
     for (i <- 0 until remainingReservations) {
       reservations += randomExecutor
