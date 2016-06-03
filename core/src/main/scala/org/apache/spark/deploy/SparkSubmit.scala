@@ -230,6 +230,7 @@ object SparkSubmit {
       case m if m.startsWith("spark") => STANDALONE
       case m if m.startsWith("mesos") => MESOS
       case m if m.startsWith("local") => LOCAL
+      case m if m.startsWith("flare") => STANDALONE
       case _ => printErrorAndExit("Master must start with yarn, spark, mesos, or local"); -1
     }
 
