@@ -2,6 +2,8 @@ package org.apache.spark.executor.flare
 
 import java.net.URL
 import java.nio.ByteBuffer
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 
 import org.apache.spark._
 import org.apache.spark.deploy.SparkHadoopUtil
@@ -26,10 +28,12 @@ private[spark] class FlareExecutorBackend(
     cores: Int,
     userClassPath: Seq[URL],
     env: SparkEnv,
-    proxyRef: RpcEndpointRef)
+    proxyRef: RpcEndpointRef,
+    cluster: FlareCluster)
   extends ThreadSafeRpcEndpoint with ExecutorBackend with Logging {
 
   case object AttemptLaunchReservation
+  case class RemoveRunningTask(reservationId: FlareReservationId)
   
   logInfo("Starting Flare Executor Backend")
   
@@ -37,13 +41,17 @@ private[spark] class FlareExecutorBackend(
 
   private val askThreadPool = ThreadUtils.newDaemonCachedThreadPool("flare-executor-ask-thread-pool")
   private implicit val askExecutionContext = ExecutionContext.fromExecutorService(askThreadPool)
-  
-  private val maxActiveTasks = cores
-  private var activeTasks = 0
 
   val driverEndpoints = new mutable.HashMap[FlareReservationId, RpcEndpointRef]
 
-  val rootPool = FlareReservationPool.createRootPool
+  private val rootPool = FlareReservationPool.createRootPool(cluster)
+
+  val taskToReservationId = new mutable.HashMap[Long, FlareReservationId]
+
+  private val activeTasks = new AtomicInteger()
+
+  private var attemptLaunchScheduled = new AtomicBoolean()
+  private val attemptLaunchScheduler = ThreadUtils.newDaemonSingleThreadScheduledExecutor("flare-executor-attempt-launch-scheduler")
 
   private def handleReservation(reservation: FlareReservation) = {
     logInfo(s"Received new reservation: $reservation")
@@ -53,28 +61,46 @@ private[spark] class FlareExecutorBackend(
     
     attemptLaunchReservation()
   }
-  
+
+  private def scheduleAttemptLaunchReservation(): Unit = {
+    if (!attemptLaunchScheduled.get) {
+      attemptLaunchScheduler.schedule(
+        new Runnable {
+          def run() = {
+            attemptLaunchReservation()
+            attemptLaunchScheduled.set(false)
+          }
+        }, 300, TimeUnit.MILLISECONDS)
+      attemptLaunchScheduled.set(true)
+    }
+  }
+
   private def attemptLaunchReservation(): Unit = {
     self.send(AttemptLaunchReservation)
   }
-  
+
+  private def removeRunningTask(reservationId: FlareReservationId) = {
+    self.send(RemoveRunningTask(reservationId))
+  }
+
   private def launchReservation(reservationId: FlareReservationId): Unit = {
-    activeTasks += 1
+    activeTasks.incrementAndGet()
     rootPool.addRunningTask(reservationId)
 
     val driverEndpoint = driverEndpoints(reservationId)
     driverEndpoint.ask[RedeemReservationResponse](RedeemReservation(reservationId, executorId, hostname)) onComplete {
       case Success(response) => response match {
         case SkipReservationResponse =>
-          activeTasks -= 1
+          removeRunningTask(reservationId)
           attemptLaunchReservation()
         case LaunchTaskReservationResponse(taskData) => 
           val taskDesc = ser.deserialize[TaskDescription](taskData.value)
+          taskToReservationId(taskDesc.taskId) = reservationId
           executor.launchTask(this, taskDesc.taskId, taskDesc.attemptNumber, taskDesc.name, taskDesc.serializedTask)
         case _ =>
       }
-      case Failure(failure) => 
-        activeTasks -= 1
+      case Failure(failure) =>
+        removeRunningTask(reservationId)
         attemptLaunchReservation()
     }
   }
@@ -104,21 +130,34 @@ private[spark] class FlareExecutorBackend(
     proxyRef.send(msg)
     
     if (TaskState.isFinished(state)) {
-      activeTasks -= 1
+      removeRunningTask(taskToReservationId(taskId))
       attemptLaunchReservation()
     }
   }
-  
+
   override def receive: PartialFunction[Any, Unit] = {
     case reservation: FlareReservation => handleReservation(reservation)
     case AttemptLaunchReservation => {
-      if (activeTasks < maxActiveTasks) {
-        val next = rootPool.nextReservation
-        next.map(launchReservation(_))
-        if (next.isDefined) {
-          attemptLaunchReservation()
+      if (activeTasks.get < cores) {
+        val startTime = System.currentTimeMillis()
+        val nextReservation = rootPool.nextReservation
+        val duration = System.currentTimeMillis() - startTime
+        logDebug(s"nextReservation took $duration ms, has result: ${nextReservation.isDefined}")
+
+        nextReservation match {
+          case Some(reservationId) => {
+            launchReservation(reservationId)
+            attemptLaunchReservation()
+          }
+          case None => {
+            scheduleAttemptLaunchReservation()
+          }
         }
       }
+    }
+    case RemoveRunningTask(reservationId) => {
+      activeTasks.decrementAndGet()
+      rootPool.removeRunningTask(reservationId)
     }
     case _ =>
   }  
@@ -178,7 +217,7 @@ private[spark] object FlareExecutorBackend extends Logging {
 
       val userClassPath = List.empty[URL]
       
-      env.rpcEnv.setupEndpoint(ENDPOINT_NAME, new FlareExecutorBackend(executorId, proxyRpcEnv.address.host, cores, userClassPath, env, driverRef))
+      env.rpcEnv.setupEndpoint(ENDPOINT_NAME, new FlareExecutorBackend(executorId, proxyRpcEnv.address.host, cores, userClassPath, env, driverRef, cluster))
    
       cluster.send(ExecutorLaunched(executorId, proxyRpcEnv.address.host, proxyRpcEnv.address.port))
 

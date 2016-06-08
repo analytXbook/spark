@@ -44,7 +44,11 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
     cluster.state.appId
   }
   
-  def placeReservations(stageId: Int, stageAttemptId: Int, executorReservationCount: Map[String, Int]) = {
+  def placeReservations(
+    stageId: Int,
+    stageAttemptId: Int,
+    executorReservationCount: Map[String, Int],
+    reservationGroups: Seq[FlareReservationGroupDescription]) = {
     executorReservationCount.foreach {
       case (executorId, reservationCount) =>
         val executor = executors(executorId)
@@ -53,7 +57,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
             FlareReservationId(stageId, stageAttemptId, driverId),
             reservationCount,
             driverEndpoint,
-            Seq.empty))
+            reservationGroups))
     }
   }
  
@@ -98,33 +102,28 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
       }
 
       case RedeemReservation(FlareReservationId(stageId, attemptId, _), executorId, host) => {
-        if (scheduler.isMaxParallelism(stageId, attemptId)) {
-          context.reply(ThrottleReservationsResponse(100))
-        } 
-        else {
-          scheduler.redeemReservation(stageId, attemptId, executorId, host) match {
-            case Some(task) => {
-              val serializedTask = ser.serialize(task)
-              /*
-              if (serializedTask.limit >= akkaFrameSize - AkkaUtils.reservedSizeBytes) {
-                scheduler.taskIdToTaskSetManager.get(task.taskId).foreach { taskSetMgr =>
-                  try {
-                    var msg = "Serialized task %s:%d was %d bytes, which exceeds max allowed: " +
-                      "spark.akka.frameSize (%d bytes) - reserved (%d bytes). Consider increasing " +
-                      "spark.akka.frameSize or using broadcast variables for large values."
-                    msg = msg.format(task.taskId, task.index, serializedTask.limit, akkaFrameSize,
-                      AkkaUtils.reservedSizeBytes)
-                    taskSetMgr.abort(msg)
-                  } catch {
-                    case e: Exception => logError("Exception in error callback", e)
-                  }
+        scheduler.redeemReservation(stageId, attemptId, executorId, host) match {
+          case Some(task) => {
+            val serializedTask = ser.serialize(task)
+            /*
+            if (serializedTask.limit >= akkaFrameSize - AkkaUtils.reservedSizeBytes) {
+              scheduler.taskIdToTaskSetManager.get(task.taskId).foreach { taskSetMgr =>
+                try {
+                  var msg = "Serialized task %s:%d was %d bytes, which exceeds max allowed: " +
+                    "spark.akka.frameSize (%d bytes) - reserved (%d bytes). Consider increasing " +
+                    "spark.akka.frameSize or using broadcast variables for large values."
+                  msg = msg.format(task.taskId, task.index, serializedTask.limit, akkaFrameSize,
+                    AkkaUtils.reservedSizeBytes)
+                  taskSetMgr.abort(msg)
+                } catch {
+                  case e: Exception => logError("Exception in error callback", e)
                 }
-              } */    
-              context.reply(LaunchTaskReservationResponse(new SerializableBuffer(serializedTask)))
-            }
-            case None => {
-              context.reply(SkipReservationResponse)
-            }
+              }
+            } */
+            context.reply(LaunchTaskReservationResponse(new SerializableBuffer(serializedTask)))
+          }
+          case None => {
+            context.reply(SkipReservationResponse)
           }
         }
       }

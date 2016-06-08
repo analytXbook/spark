@@ -1,6 +1,7 @@
 package org.apache.spark.scheduler.flare
 
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.executor.TaskMetrics
@@ -9,6 +10,7 @@ import org.apache.spark.util.{Clock, SystemClock, Utils}
 import org.apache.spark._
 
 import scala.collection.mutable.{HashMap, HashSet, ListBuffer, MultiMap, Set}
+import scala.collection.JavaConverters._
 import scala.util.Random
 import scala.util.control.NonFatal
 
@@ -43,7 +45,7 @@ private[spark] class FlareReservationManager(
   
   def runningTasks: Int = runningTasksSet.size
   
-  val taskInfos = new HashMap[Long, TaskInfo]
+   val taskInfos = new ConcurrentHashMap[Long, TaskInfo].asScala
   
   val taskAttempts = Array.fill[List[TaskInfo]](numTasks)(Nil)
   var tasksSuccessful = 0

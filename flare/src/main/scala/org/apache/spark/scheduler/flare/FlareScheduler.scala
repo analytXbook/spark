@@ -1,6 +1,7 @@
 package org.apache.spark.scheduler.flare
 
 import java.nio.ByteBuffer
+import java.util.Properties
 import java.util.concurrent.atomic.AtomicLong
 
 import org.apache.spark.TaskState.TaskState
@@ -23,7 +24,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   val cpusPerTask = conf.getInt("spark.task.cpus", 1)
   val maxTaskFailures = conf.getInt("spark.task.maxFailures", 4)
   
-  val reservationsByStageIdAndAttempt = new HashMap[Int, HashMap[Int, FlareReservationManager]]
+  val managersByStageIdAndAttempt = new HashMap[Int, HashMap[Int, FlareReservationManager]]
   
   val nextTaskId = new AtomicLong(0)
   
@@ -106,6 +107,16 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
       reason: TaskEndReason): Unit = synchronized {
     reservationManager.handleFailedTask(tid, taskState, reason)
   }
+
+  private def getGroupDescription(properties: Properties, index: Int): Option[FlareReservationGroupDescription] = {
+    val prefix = s"spark.flare.pool[$index]"
+    Option(properties.getProperty(s"$prefix.name")).map { name =>
+      val maxShare = Option(properties.getProperty(s"$prefix.maxShare")).map(_.toInt)
+      val minShare = Option(properties.getProperty(s"$prefix.minShare")).map(_.toInt)
+      val weight = Option(properties.getProperty(s"$prefix.weight")).map(_.toInt)
+      FlareReservationGroupDescription(name, minShare, maxShare, weight)
+    }
+  }
    
   override def submitTasks(taskSet: TaskSet): Unit = {
     val tasks = taskSet.tasks
@@ -113,21 +124,36 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
     
     this.synchronized {
       val manager = createReservationManager(taskSet)
-      val stageReservations =
-        reservationsByStageIdAndAttempt.getOrElseUpdate(taskSet.stageId, new HashMap[Int, FlareReservationManager])
-      stageReservations(taskSet.stageAttemptId) = manager
+      val stageManagers =
+        managersByStageIdAndAttempt.getOrElseUpdate(taskSet.stageId, new HashMap[Int, FlareReservationManager])
+      stageManagers(taskSet.stageAttemptId) = manager
       
       val reservations = manager.getReservations
-      
-      backend.placeReservations(taskSet.stageId, taskSet.stageAttemptId, reservations)
+
+      val reservationGroups = {
+        var groups = Seq.empty[FlareReservationGroupDescription]
+
+        var groupIndex = 0
+        var nextGroup = getGroupDescription(taskSet.properties, groupIndex)
+
+        while (nextGroup.isDefined) {
+          groups = groups :+ nextGroup.get
+          groupIndex += 1
+          nextGroup = getGroupDescription(taskSet.properties, groupIndex)
+        }
+
+        groups
+      }
+
+      backend.placeReservations(taskSet.stageId, taskSet.stageAttemptId, reservations, reservationGroups)
     }
   }
   
   def isMaxParallelism(stageId: Int, stageAttemptId: Int): Boolean =
-    reservationsByStageIdAndAttempt(stageId)(stageAttemptId).isMaxParallelism
+    managersByStageIdAndAttempt(stageId)(stageAttemptId).isMaxParallelism
   
   def redeemReservation(stageId: Int, stageAttemptId: Int, executorId: String, host: String): Option[TaskDescription] = {
-    reservationsByStageIdAndAttempt.get(stageId).flatMap(_.get(stageAttemptId)) match {
+    managersByStageIdAndAttempt.get(stageId).flatMap(_.get(stageAttemptId)) match {
       case Some(manager) => {
         val taskOpt = manager.getTask(executorId, host)
         taskOpt.foreach { task => 
@@ -182,7 +208,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   
   override def cancelTasks(stageId: Int, interruptThread: Boolean) = synchronized {
     logInfo("Cancelling stage " + stageId)
-    reservationsByStageIdAndAttempt.get(stageId).foreach { attempts =>
+    managersByStageIdAndAttempt.get(stageId).foreach { attempts =>
       attempts.foreach { case (_, manager) =>
         manager.runningTasksSet.foreach { taskId => 
           val executorId = taskIdToExecutorId(taskId)
