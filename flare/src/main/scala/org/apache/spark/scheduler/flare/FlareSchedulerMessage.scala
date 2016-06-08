@@ -6,7 +6,7 @@ import org.apache.spark.util.SerializableBuffer
 import java.nio.ByteBuffer
 
 private[spark] case class FlareReservationId(stageId: Int, attemptId: Int, driverId: Int)
-private[spark] case class FlareReservationGroupDescription(name: String, maxShare: Int, weight: Double)
+private[spark] case class FlareReservationGroupDescription(name: String, minShare: Option[Int], maxShare: Option[Int], weight: Option[Int])
 
 private[spark] sealed trait FlareMessage extends Serializable
 

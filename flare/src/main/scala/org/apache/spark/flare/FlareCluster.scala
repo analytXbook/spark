@@ -14,7 +14,9 @@ import org.jgroups.util.Util
 import java.io.DataOutputStream
 import java.io.DataInputStream
 import java.net.{InetAddress, InetSocketAddress}
+import java.util.concurrent.TimeUnit
 
+import org.apache.spark.util.ThreadUtils
 import org.jgroups.Address
 import org.jgroups.blocks.atomic.CounterService
 import org.jgroups.blocks.atomic.Counter
@@ -33,6 +35,13 @@ private[spark] class FlareCluster(val conf: FlareClusterConfiguration) extends R
   private val counterService: CounterService = new CounterService(channel)
 
   private var lastView: View = _
+
+  private val printScheduler = ThreadUtils.newDaemonSingleThreadScheduledExecutor("counter-print-scheduler")
+  printScheduler.scheduleAtFixedRate(new Runnable {
+    def run() = {
+      logDebug("Cluster Counters:\n" + counterService.printCounters())
+    }
+  }, 1000, 1000, TimeUnit.MILLISECONDS)
 
   private def createProtocolStack: ProtocolStack = {
     new ProtocolStack()
@@ -54,7 +63,7 @@ private[spark] class FlareCluster(val conf: FlareClusterConfiguration) extends R
       .addProtocol(new UNICAST3())
       .addProtocol(new pbcast.STABLE())
       .addProtocol(new pbcast.GMS()
-        .setValue("print_local_addr", true))
+        .setValue("print_local_addr", false))
       .addProtocol(new MFC())
       .addProtocol(new FRAG2())
       .addProtocol(new COUNTER())

@@ -11,6 +11,8 @@ private[spark] class AsyncCounter(counter: Counter) extends Counter {
   private var lastUpdate = System.currentTimeMillis
   private val TTL = 1000  // 1 second
 
+  private var refreshPending = false
+
   private def hasExpired = (System.currentTimeMillis - lastUpdate) > TTL
 
   private def runUpdate(update: => Long): Unit = {
@@ -35,10 +37,14 @@ private[spark] class AsyncCounter(counter: Counter) extends Counter {
     localValue.incrementAndGet
   }
 
-
   override def get(): Long = {
-    if (hasExpired) {
-      runUpdate(counter.get)
+    if (hasExpired && !refreshPending) {
+      runUpdate {
+        val value = counter.get()
+        refreshPending = false
+        value
+      }
+      refreshPending = true
     }
     localValue.get
   }
