@@ -105,6 +105,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
       tid: Long,
       taskState: TaskState,
       reason: TaskEndReason): Unit = synchronized {
+    // get new reservations to place from reservation manager
     reservationManager.handleFailedTask(tid, taskState, reason)
   }
 
@@ -210,7 +211,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
     logInfo("Cancelling stage " + stageId)
     managersByStageIdAndAttempt.get(stageId).foreach { attempts =>
       attempts.foreach { case (_, manager) =>
-        manager.runningTasksSet.foreach { taskId => 
+        manager.runningTasks.foreach { taskId =>
           val executorId = taskIdToExecutorId(taskId)
           backend.killTask(taskId, executorId, interruptThread)
         }
@@ -219,6 +220,13 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
         logInfo("Stage %d was cancelled".format(stageId))
       }
     }
+  }
+
+  def taskSetFinished(reservationManager: FlareReservationManager) = synchronized {
+    val taskSet = reservationManager.taskSet
+    val executors = reservationManager.pendingReservations.keySet.toSeq
+    backend.cancelReservations(taskSet.stageId, taskSet.stageAttemptId, executors)
+    managersByStageIdAndAttempt.get(taskSet.stageId).flatMap(_.remove(taskSet.stageAttemptId))
   }
   
   override def defaultParallelism(): Int = backend.defaultParallelism()

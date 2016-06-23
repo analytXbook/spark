@@ -1,5 +1,6 @@
 package org.apache.spark.scheduler.flare
 
+import java.io.NotSerializableException
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
@@ -28,6 +29,9 @@ private[spark] class FlareReservationManager(
   val probeRatio = taskSet.properties.getProperty("spark.flare.probeRatio", "2.0").toDouble
   val parallelismLimit = Option(taskSet.properties.getProperty("spark.flare.parallelismLimit")).map(_.toInt)
   val limitExecutorParallelism = Option(taskSet.properties.getProperty("spark.flare.limitExecutorParallelism")).map(_.toInt)
+
+  val EXCEPTION_PRINT_INTERVAL =
+    conf.getLong("spark.logging.exceptionPrintInterval", 10000)
   
   val maxResultSize = Utils.getMaxResultSize(conf)
   
@@ -41,35 +45,41 @@ private[spark] class FlareReservationManager(
   
   val pendingReservations = new HashMap[String, Int]
   
-  val runningTasksSet = new HashSet[Long]
-  
-  def runningTasks: Int = runningTasksSet.size
-  
-   val taskInfos = new ConcurrentHashMap[Long, TaskInfo].asScala
-  
+  val runningTasks = new HashSet[Long]
+
+  def runningTaskCount: Int = runningTasks.size
+
+  val taskInfos = new ConcurrentHashMap[Long, TaskInfo].asScala
+
   val taskAttempts = Array.fill[List[TaskInfo]](numTasks)(Nil)
+  val successful = new Array[Boolean](numTasks)
+
   var tasksSuccessful = 0
+
+  val recentExceptions = HashMap[String, (Int, Long)]()
 
   val epoch = scheduler.mapOutputTracker.getEpoch
   logDebug("Epoch for " + taskSet + ": " + epoch)
   for (t <- tasks) {
     t.epoch = epoch
   }
-  
+
+  var isZombie = false
+
   def addRunningTask(taskId: Long) {
-    runningTasksSet.add(taskId)
+    runningTasks.add(taskId)
   }
-  
+
   def removeRunningTask(taskId: Long) {
-    runningTasksSet.remove(taskId)
+    runningTasks.remove(taskId)
   }
-  
+
   def executorFromHost(host: String): Option[String] = {
     scheduler.executorsByHost.get(host).flatMap(executors =>
       if (executors.isEmpty) None
       else Some(executors(Random.nextInt(executors.length))))
   }
-  
+
   def randomExecutor: String = {
     scheduler.executors(Random.nextInt(scheduler.executors.length))
   }
@@ -105,56 +115,73 @@ private[spark] class FlareReservationManager(
 
     reservations.groupBy(identity).mapValues(_.size)
   }
-  
+
   def getMatchedLocality(task: Task[_], executorId: String, host: String): TaskLocality.Value = {
     var highestLocality = TaskLocality.ANY
     for (location <- task.preferredLocations) {
       location match {
-        case ExecutorCacheTaskLocation(_, execId) => 
-          if (executorId == execId) 
+        case ExecutorCacheTaskLocation(_, execId) =>
+          if (executorId == execId)
             highestLocality = TaskLocality.PROCESS_LOCAL
         case location =>
           if (location.host == host && highestLocality != TaskLocality.PROCESS_LOCAL)
             highestLocality = TaskLocality.NODE_LOCAL
-      }   
+      }
     }
     highestLocality
   }
-  
+
   def abort(message: String, exception: Option[Throwable] = None) = {
     scheduler.dagScheduler.taskSetFailed(taskSet, message, exception)
-    //scheduler.taskSetFinished(this)
-    
+    attemptFinishReservation()
   }
-  
+
   def executorLost(executorId: String, host: String, reason: ExecutorLossReason)  = {
-    
+
   }
-  
+
   def canFetchMoreResults(size: Long): Boolean = true
-  
+
   def handleTaskGettingResult(taskId: Long): Unit = {
     val info = taskInfos(taskId)
     info.markGettingResult()
     scheduler.dagScheduler.taskGettingResult(info)
   }
-  
-  def handleSuccessfulTask(taskId: Long, result: DirectTaskResult[_]): Unit = {
+
+  def attemptFinishReservation() = {
+    if (isZombie && runningTasks == 0) {
+      scheduler.taskSetFinished(this)
+    }
+  }
+
+  def handleSuccessfulTask(taskId: Long, result: DirectTaskResult[_]) = {
     val taskInfo = taskInfos(taskId)
     val index = taskInfo.index
     taskInfo.markSuccessful()
     removeRunningTask(taskId)
-    
+
     scheduler.dagScheduler.taskEnded(
       tasks(index), Success, result.value(), result.accumUpdates, taskInfo, result.metrics)
-      
-    tasksSuccessful += 1  
-    logInfo("Finished task %s in stage %s (TID %d) in %d ms on %s (%d/%d)".format(
+
+    if (!successful(index)) {
+      tasksSuccessful += 1
+      logInfo("Finished task %s in stage %s (TID %d) in %d ms on %s (%d/%d)".format(
         taskInfo.id, taskSet.id, taskInfo.taskId, taskInfo.duration, taskInfo.host, tasksSuccessful, numTasks))
 
+      successful(index) = true
+      if (tasksSuccessful == numTasks) {
+        isZombie = true
+      }
+    } else {
+      logInfo("Ignoring task-finished event for " + taskInfo.id + " in stage " + taskSet.id +
+        " because task " + index + " has already completed successfully")
+    }
+
+
+    attemptFinishReservation()
   }
 
-  
+
   def handleFailedTask(taskId: Long, state: TaskState, reason: TaskEndReason): Unit = {
     val taskInfo = taskInfos(taskId)
     val index = taskInfo.index
@@ -163,13 +190,79 @@ private[spark] class FlareReservationManager(
     }
     removeRunningTask(taskId)
     taskInfo.markFailed()
-    
-    val taskMetrics: TaskMetrics = null
-    
+
+    var taskMetrics: TaskMetrics = null
+
+    val failureReason = s"Lost task ${taskInfo.id} in stage ${taskSet.id} (TID $taskId, ${taskInfo.host}): " +
+      reason.asInstanceOf[TaskFailedReason].toErrorString
+
+    val failureException: Option[Throwable] = reason match {
+      case fetchFailed: FetchFailed =>
+        logWarning(failureReason)
+        if (!successful(index)) {
+          successful(index) = true
+          tasksSuccessful += 1
+        }
+        // Not adding to failed executors for FetchFailed.
+        isZombie = true
+        None
+      case ef: ExceptionFailure =>
+        taskMetrics = ef.metrics.orNull
+        if (ef.className == classOf[NotSerializableException].getName) {
+          // If the task result wasn't serializable, there's no point in trying to re-execute it.
+          logError("Task %s in stage %s (TID %d) had a not serializable result: %s; not retrying"
+            .format(taskInfo.id, taskSet.id, taskId, ef.description))
+          abort("Task %s in stage %s (TID %d) had a not serializable result: %s".format(
+            taskInfo.id, taskSet.id, taskId, ef.description))
+          return
+        }
+        val key = ef.description
+        val now = clock.getTimeMillis()
+        val (printFull, dupCount) = {
+          if (recentExceptions.contains(key)) {
+            val (dupCount, printTime) = recentExceptions(key)
+            if (now - printTime > EXCEPTION_PRINT_INTERVAL) {
+              recentExceptions(key) = (0, now)
+              (true, 0)
+            } else {
+              recentExceptions(key) = (dupCount + 1, printTime)
+              (false, dupCount + 1)
+            }
+          } else {
+            recentExceptions(key) = (0, now)
+            (true, 0)
+          }
+        }
+        if (printFull) {
+          logWarning(failureReason)
+        } else {
+          logInfo(
+            s"Lost task ${taskInfo.id} in stage ${taskSet.id} (TID $taskId) on executor ${taskInfo.host}: " +
+              s"${ef.className} (${ef.description}) [duplicate $dupCount]")
+        }
+        ef.exception
+
+      case e: ExecutorLostFailure if !e.exitCausedByApp =>
+        logInfo(s"Task $taskId failed because while it was being computed, its executor" +
+          "exited for a reason unrelated to the task. Not counting this failure towards the " +
+          "maximum number of failures for the task.")
+        None
+
+      case e: TaskFailedReason =>  // TaskResultLost, TaskKilled, and others
+        logWarning(failureReason)
+        None
+
+      case e: TaskEndReason =>
+        logError("Unknown TaskEndReason: " + e)
+        None
+    }
+
+
+
     scheduler.dagScheduler.taskEnded(tasks(index), reason, null, null, taskInfo, taskMetrics)
   }
 
-  def isMaxParallelism: Boolean = parallelismLimit.fold(false)(runningTasks >= _)
+  def isMaxParallelism: Boolean = parallelismLimit.fold(false)(runningTaskCount >= _)
    
   def getTask(executorId: String, host: String): Option[TaskDescription] = {
     val currentTime = clock.getTimeMillis()

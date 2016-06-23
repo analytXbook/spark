@@ -19,6 +19,7 @@ import org.apache.spark.storage.BlockManagerMaster
 import org.apache.spark.util.{SignalLogger, ThreadUtils}
 
 import scala.collection.mutable
+import scala.collection.mutable.{HashMap, MultiMap, Set}
 import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
 
@@ -42,24 +43,46 @@ private[spark] class FlareExecutorBackend(
   private val askThreadPool = ThreadUtils.newDaemonCachedThreadPool("flare-executor-ask-thread-pool")
   private implicit val askExecutionContext = ExecutionContext.fromExecutorService(askThreadPool)
 
-  val driverEndpoints = new mutable.HashMap[FlareReservationId, RpcEndpointRef]
+  private val driverEndpoints = new mutable.HashMap[FlareReservationId, RpcEndpointRef]
 
   private val rootPool = FlareReservationPool.createRootPool(cluster)
 
-  val taskToReservationId = new mutable.HashMap[Long, FlareReservationId]
+  private val taskToReservationId = new mutable.HashMap[Long, FlareReservationId]
+  private val reservationTasks = new HashMap[FlareReservationId, Set[Long]] with MultiMap[FlareReservationId, Long]
 
   private val activeTasks = new AtomicInteger()
 
-  private var attemptLaunchScheduled = new AtomicBoolean()
+  private val attemptLaunchScheduled = new AtomicBoolean()
   private val attemptLaunchScheduler = ThreadUtils.newDaemonSingleThreadScheduledExecutor("flare-executor-attempt-launch-scheduler")
 
   private def handleReservation(reservation: FlareReservation) = {
-    logInfo(s"Received new reservation: $reservation")
+    logDebug(s"Received new reservation: $reservation")
 
     driverEndpoints(reservation.reservationId) = reservation.driverEndpoint
     rootPool.addReservation(reservation.reservationId, reservation.count, reservation.groups)
     
     attemptLaunchReservation()
+  }
+
+  private def cancelReservation(reservationId: FlareReservationId) = {
+    logDebug(s"Cancelling reservation $reservationId")
+
+    reservationTasks.get(reservationId).foreach(_.foreach(killTask(_, false)))
+
+    rootPool.removeReservation(reservationId)
+
+    attemptLaunchReservation()
+  }
+
+  private def killTask(taskId: Long, interrupt: Boolean) = {
+    executor.killTask(taskId, interrupt)
+
+    taskToReservationId.remove(taskId).map {
+      reservationId => {
+        rootPool.removeRunningTask(reservationId)
+        reservationTasks.removeBinding(reservationId, taskId)
+      }
+    }
   }
 
   private def scheduleAttemptLaunchReservation(): Unit = {
@@ -96,6 +119,7 @@ private[spark] class FlareExecutorBackend(
         case LaunchTaskReservationResponse(taskData) => 
           val taskDesc = ser.deserialize[TaskDescription](taskData.value)
           taskToReservationId(taskDesc.taskId) = reservationId
+          reservationTasks.addBinding(reservationId, taskDesc.taskId)
           executor.launchTask(this, taskDesc.taskId, taskDesc.attemptNumber, taskDesc.name, taskDesc.serializedTask)
         case _ =>
       }
@@ -130,13 +154,18 @@ private[spark] class FlareExecutorBackend(
     proxyRef.send(msg)
     
     if (TaskState.isFinished(state)) {
+      val reservationId = taskToReservationId(taskId)
       removeRunningTask(taskToReservationId(taskId))
+      taskToReservationId.remove(taskId)
+      reservationTasks.removeBinding(reservationId, taskId)
+
       attemptLaunchReservation()
     }
   }
 
   override def receive: PartialFunction[Any, Unit] = {
     case reservation: FlareReservation => handleReservation(reservation)
+    case CancelReservation(reservationId) => cancelReservation(reservationId)
     case AttemptLaunchReservation => {
       if (activeTasks.get < cores) {
         val startTime = System.currentTimeMillis()
