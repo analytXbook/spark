@@ -60,6 +60,24 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
             reservationGroups))
     }
   }
+
+  def cancelReservations(
+    stageId: Int,
+    stageAttemptId: Int,
+    executorIds: Seq[String]) = {
+    executorIds.foreach {
+      executorId => {
+        val executor = executors(executorId)
+        executor.executorEndpoint.send(
+          CancelReservation(FlareReservationId(stageId, stageAttemptId, driverId))
+        )
+      }
+    }
+  }
+
+  override def killTask(taskId: Long, executorId: String, interruptThread: Boolean) = {
+    driverEndpoint.send(KillTask(taskId, executorId, interruptThread))
+  }
  
   private class DriverEndpoint(override val rpcEnv: RpcEnv)
     extends ThreadSafeRpcEndpoint with Logging {

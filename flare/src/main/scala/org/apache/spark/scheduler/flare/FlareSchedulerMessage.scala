@@ -24,9 +24,9 @@ private[spark] object FlareMessages {
   case class LaunchTaskReservationResponse(data: SerializableBuffer) extends RedeemReservationResponse
   case object SkipReservationResponse extends RedeemReservationResponse
   case class ThrottleReservationsResponse(delay: Long) extends RedeemReservationResponse
-  case class CancelReservation(requestId: String) extends FlareMessage
+  case class CancelReservation(reservationId: FlareReservationId) extends FlareMessage
 
-  case class KillTask(taskId: Int, executorId: String, interruptThread: Boolean) extends FlareMessage
+  case class KillTask(taskId: Long, executorId: String, interruptThread: Boolean) extends FlareMessage
 
   case class StatusUpdate(
       executorId: String,
