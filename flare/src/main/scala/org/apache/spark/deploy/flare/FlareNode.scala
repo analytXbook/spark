@@ -96,12 +96,12 @@ private[spark] class FlareNode(
   private def launchExecutor(executorId: String, conf: SparkConf) = {
     val appDir = new File(workDir, cluster.state.appId)
     if (!appDir.exists() && !appDir.mkdir()) {
-      throw new IOException("Failed to create directory " + appDir)
+      log.warn("Failed to create directory " + appDir)
     }
 
     val executorDir = new File(appDir, executorId.toString)
     if (!executorDir.mkdirs()) {
-      throw new IOException("Failed to create directory " + executorDir)
+      log.warn("Failed to create directory " + executorDir)
     }
 
     val memory = conf.getSizeAsMb("spark.executor.memory", "1g")
@@ -137,6 +137,10 @@ private[spark] class FlareNode(
     joinCluster()
     launchExecutors() 
   }
+
+  def close() = {
+    cluster.close()
+  }
 }
 
 object FlareNode extends Logging {
@@ -145,7 +149,9 @@ object FlareNode extends Logging {
     
     val nodeArgs = new FlareNodeArguments(args)
     
-    new FlareNode(nodeArgs.clusterConf, Option(nodeArgs.workDir)).start()
+    val node = new FlareNode(nodeArgs.clusterConf, Option(nodeArgs.workDir))
+
+    node.start()
   }
 }
 

@@ -36,12 +36,14 @@ private[spark] class FlareCluster(val conf: FlareClusterConfiguration) extends R
 
   private var lastView: View = _
 
+  /*
   private val printScheduler = ThreadUtils.newDaemonSingleThreadScheduledExecutor("counter-print-scheduler")
   printScheduler.scheduleAtFixedRate(new Runnable {
     def run() = {
       logDebug("Cluster Counters:\n" + counterService.printCounters())
     }
-  }, 1000, 1000, TimeUnit.MILLISECONDS)
+  }, 5000, 5000, TimeUnit.MILLISECONDS)
+  */
 
   private def createProtocolStack: ProtocolStack = {
     new ProtocolStack()
@@ -55,7 +57,7 @@ private[spark] class FlareCluster(val conf: FlareClusterConfiguration) extends R
         .setValue("send_cache_on_join", true))
       .addProtocol(new MERGE3())
       .addProtocol(new FD_SOCK())
-      .addProtocol(new FD())
+      .addProtocol(new FD_ALL())
       .addProtocol(new VERIFY_SUSPECT())
       .addProtocol(new BARRIER())
       .addProtocol(new pbcast.NAKACK2()
@@ -170,6 +172,7 @@ private[spark] class FlareCluster(val conf: FlareClusterConfiguration) extends R
   }
  
   def close(): Unit = {
+    channel.disconnect()
     channel.close()
     listenerBus.stop()
   }
