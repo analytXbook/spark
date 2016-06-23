@@ -197,6 +197,8 @@ private[spark] object FlareExecutorBackend extends Logging {
   val PROXY_PORT = 21000
   val EXECUTOR_PORT = 20000
 
+  var cluster: FlareCluster = _
+
   private def run(
     executorId: String,
     cores: Int,
@@ -205,7 +207,7 @@ private[spark] object FlareExecutorBackend extends Logging {
     SignalLogger.register(log)
     
     SparkHadoopUtil.get.runAsSparkUser { () =>
-      val cluster = FlareCluster(clusterConf)
+      cluster = FlareCluster(clusterConf)
       cluster.connect()
 
       val executorConf = new SparkConf
@@ -293,8 +295,15 @@ private[spark] object FlareExecutorBackend extends Logging {
     }
 
     val clusterConf = FlareClusterConfiguration.fromUrl(clusterUrl, bindHostname, bindPort, portRange)
-    
-    run(executorId, cores, clusterConf)
+
+    try {
+      run(executorId, cores, clusterConf)
+    } finally {
+      if (cluster != null) {
+        logInfo("Leaving cluster")
+        cluster.close()
+      }
+    }
   }
   
   private def printUsageAndExit() = {

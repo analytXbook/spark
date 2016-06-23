@@ -83,7 +83,6 @@ private[spark] class FlareExecutorRunner(
   }
 
   private def killProcess(message: Option[String]) = {
-    var exitCode: Option[Int] = None
     if (process != null) {
       logInfo("Killing process!")
       if (stdoutAppender != null) {
@@ -92,11 +91,13 @@ private[spark] class FlareExecutorRunner(
       if (stderrAppender != null) {
         stderrAppender.stop()
       }
-      exitCode = Utils.terminateProcess(process, EXECUTOR_TERMINATE_TIMEOUT_MS)
-      if (exitCode.isEmpty) {
+      val exited = Utils.waitForProcess(process, EXECUTOR_TERMINATE_TIMEOUT_MS)
+      if (exited) {
         logWarning("Failed to terminate process: " + process +
           ". This process will likely be orphaned.")
       }
+
+      val exitCode = if (exited) Some(process.exitValue()) else None
 
       node.onExecutorStateChanged(executorId, state, message, exitCode)
     }
