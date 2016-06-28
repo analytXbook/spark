@@ -17,8 +17,8 @@ private[spark] abstract class FlareDriverProxyEndpoint(endpointName: String, clu
   override def onStart = {
     cluster.addListener(this)
     
-    cluster.state.drivers.foreach {
-      case (driverId, FlareDriverInfo(hostname, port)) => addDriver(driverId, hostname, port)
+    cluster.drivers.foreach {
+      case DriverData(driverId, hostname, port) => addDriver(driverId, hostname, port)
     }
   }
   
@@ -34,12 +34,12 @@ private[spark] abstract class FlareDriverProxyEndpoint(endpointName: String, clu
     driverRefs(driverId) = rpcRef
   }
   
-  override def onDriverJoined(driver: DriverJoined) = {
-    addDriver(driver.driverId, driver.hostname, driver.port)
+  override def onDriverJoined(data: DriverData) = {
+    addDriver(data.driverId, data.hostname, data.port)
   }
   
-  override def onDriverExited(driver: DriverExited) = {
-    driverRefs.remove(driver.driverId)
+  override def onDriverExited(data: DriverData) = {
+    driverRefs.remove(data.driverId)
   }
   
   protected def driverId(encodedId: Long) = EncodedId.decode(encodedId)._1

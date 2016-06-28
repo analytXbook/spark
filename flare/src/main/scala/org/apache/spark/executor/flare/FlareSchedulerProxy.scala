@@ -1,7 +1,7 @@
 package org.apache.spark.executor.flare
 
 import org.apache.spark.Logging
-import org.apache.spark.flare.{DriverJoined, FlareCluster}
+import org.apache.spark.flare.{DriverData, FlareCluster}
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv}
 import org.apache.spark.scheduler.flare.FlareMessages._
 import org.apache.spark.scheduler.flare.FlareSchedulerBackend
@@ -55,10 +55,10 @@ private[spark] class FlareSchedulerProxy(
     }
   }
 
-  override def onDriverJoined(driver: DriverJoined) = {
-    super.onDriverJoined(driver)
+  override def onDriverJoined(data: DriverData) = {
+    super.onDriverJoined(data)
 
-    registerWithDriver(driver.driverId, driverRefs(driver.driverId))
+    registerWithDriver(data.driverId, driverRefs(data.driverId))
   }
 
 }

@@ -66,11 +66,6 @@
       <scope>compile</scope>
     </dependency>
     <!-- End of shaded deps. -->
-
-    <dependency>
-       <groupId>org.jgroups</groupId>
-       <artifactId>jgroups</artifactId>
-    </dependency>
   </dependencies>
 
   <build>
