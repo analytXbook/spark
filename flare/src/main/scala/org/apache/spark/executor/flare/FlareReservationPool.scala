@@ -38,7 +38,7 @@ private[spark] class FlareReservationPoolGroup(
   val reservationToChild = new HashMap[FlareReservationId, FlareReservationPool]
   val groupToChild = new HashMap[String, FlareReservationPool]
 
-  val runningTaskCounter = cluster.asyncCounter(s"PoolRunningTasks:$name")
+  val runningTaskCounter = cluster.counter(s"PoolRunningTasks:$name")
 
   def runningTasks = runningTaskCounter.get().toInt
 
@@ -72,7 +72,7 @@ private[spark] class FlareReservationPoolGroup(
   }
 
   def addRunningTask(reservationId: FlareReservationId) = {
-    runningTaskCounter.incrementAndGet()
+    runningTaskCounter.increment()
     reservationToChild.get(reservationId) match {
       case Some(pool) => pool.addRunningTask(reservationId)
       case None => logError(s"Could not find child pool for $reservationId")
@@ -80,7 +80,7 @@ private[spark] class FlareReservationPoolGroup(
   }
 
   def removeRunningTask(reservationId: FlareReservationId) = {
-    runningTaskCounter.decrementAndGet()
+    runningTaskCounter.decrement()
     reservationToChild.get(reservationId) match {
       case Some(pool) => pool.removeRunningTask(reservationId)
       case None => logError(s"Could not find child pool for $reservationId")

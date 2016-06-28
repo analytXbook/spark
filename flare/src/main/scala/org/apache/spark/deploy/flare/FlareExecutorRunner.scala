@@ -39,9 +39,7 @@ private[spark] class FlareExecutorRunner(
   private def getCommand(): Command = {
     val args = Seq(
       "--executor-id", executorId,
-      "--hostname", clusterConf.bindHostname,
-      "--port", clusterConf.bindPort.toString,
-      "--port-range", clusterConf.portRange.toString,
+      "--hostname", clusterConf.hostname,
       "--cores", cores.toString,
       clusterConf.clusterUrl)
     

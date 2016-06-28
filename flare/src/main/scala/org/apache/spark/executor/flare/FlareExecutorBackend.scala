@@ -2,12 +2,11 @@ package org.apache.spark.executor.flare
 
 import java.net.URL
 import java.nio.ByteBuffer
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 
 import org.apache.spark._
 import org.apache.spark.deploy.SparkHadoopUtil
-import org.apache.spark.deploy.flare._
 import org.apache.spark.executor.{Executor, ExecutorBackend}
 import org.apache.spark.flare._
 import org.apache.spark.rpc.{RpcAddress, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
@@ -35,6 +34,7 @@ private[spark] class FlareExecutorBackend(
 
   case object AttemptLaunchReservation
   case class RemoveRunningTask(reservationId: FlareReservationId)
+  case class CleanUpFinishedTask(taskId: Long)
   
   logInfo("Starting Flare Executor Backend")
   
@@ -47,7 +47,7 @@ private[spark] class FlareExecutorBackend(
 
   private val rootPool = FlareReservationPool.createRootPool(cluster)
 
-  private val taskToReservationId = new mutable.HashMap[Long, FlareReservationId]
+  private val taskToReservationId = new HashMap[Long, FlareReservationId]
   private val reservationTasks = new HashMap[FlareReservationId, Set[Long]] with MultiMap[FlareReservationId, Long]
 
   private val activeTasks = new AtomicInteger()
@@ -93,7 +93,7 @@ private[spark] class FlareExecutorBackend(
             attemptLaunchReservation()
             attemptLaunchScheduled.set(false)
           }
-        }, 300, TimeUnit.MILLISECONDS)
+        }, 100, TimeUnit.MILLISECONDS)
       attemptLaunchScheduled.set(true)
     }
   }
@@ -154,10 +154,7 @@ private[spark] class FlareExecutorBackend(
     proxyRef.send(msg)
     
     if (TaskState.isFinished(state)) {
-      val reservationId = taskToReservationId(taskId)
-      removeRunningTask(taskToReservationId(taskId))
-      taskToReservationId.remove(taskId)
-      reservationTasks.removeBinding(reservationId, taskId)
+      self.send(CleanUpFinishedTask(taskId))
 
       attemptLaunchReservation()
     }
@@ -188,6 +185,18 @@ private[spark] class FlareExecutorBackend(
       activeTasks.decrementAndGet()
       rootPool.removeRunningTask(reservationId)
     }
+    case CleanUpFinishedTask(taskId) => {
+      taskToReservationId.get(taskId) match {
+        case Some(reservationId) => {
+          removeRunningTask(reservationId)
+          reservationTasks.removeBinding(reservationId, taskId)
+          taskToReservationId.remove(taskId)
+        }
+        case None => {
+          logWarning("Could not find reservation for taskId, may be duplicate finished status update ")
+        }
+      }
+    }
     case _ =>
   }  
 }
@@ -208,30 +217,20 @@ private[spark] object FlareExecutorBackend extends Logging {
     
     SparkHadoopUtil.get.runAsSparkUser { () =>
       cluster = FlareCluster(clusterConf)
-      cluster.connect()
+      cluster.start(ExecutorClusterProfile(executorId, clusterConf.hostname))
 
-      val executorConf = new SparkConf
+      val executorConf = clusterConf.sparkConf
 
-      if (!cluster.state.isInitialized) {
-        logInfo("Waiting for driver")
-        while (!cluster.state.isInitialized) {
-          synchronized {
-            this.wait(100)
-          }
-        }
-        logInfo("Cluster initialized")
-      }
+      logInfo(s"Driver Properties: ${cluster.properties}")
 
-      logInfo(s"Driver Properties: ${cluster.state.properties}")
-
-      cluster.state.properties.foreach {
+      cluster.properties.foreach {
         case (key, value) => executorConf.set(key, value)
       }
 
-      executorConf.set("spark.app.id", cluster.state.appId)
+      executorConf.set("spark.app.id", cluster.appId)
 
       val proxyConf = new SparkConf
-      val proxyRpcEnv = RpcEnv.create("sparkDriver", clusterConf.bindHostname, PROXY_PORT, proxyConf, new SecurityManager(proxyConf), false)
+      val proxyRpcEnv = RpcEnv.create("sparkDriver", clusterConf.hostname, PROXY_PORT, proxyConf, new SecurityManager(proxyConf), false)
 
       proxyRpcEnv.setupEndpoint(HeartbeatReceiver.ENDPOINT_NAME, new FlareHeartbeatProxy(cluster, proxyRpcEnv))
       proxyRpcEnv.setupEndpoint(MapOutputTracker.ENDPOINT_NAME, new FlareMapOutputTrackerProxy(cluster, proxyRpcEnv))
@@ -242,15 +241,13 @@ private[spark] object FlareExecutorBackend extends Logging {
       executorConf.set("spark.driver.host", proxyRpcEnv.address.host)
       executorConf.set("spark.driver.port", proxyRpcEnv.address.port.toString)
 
-      val env = SparkEnv.createExecutorEnv(executorConf, executorId, clusterConf.bindHostname, EXECUTOR_PORT, cores, isLocal = false)
+      val env = SparkEnv.createExecutorEnv(executorConf, executorId, clusterConf.hostname, EXECUTOR_PORT, cores, isLocal = false)
      
       val driverRef = env.rpcEnv.setupEndpointRef("sparkDriver", proxyRpcEnv.address, FlareSchedulerBackend.ENDPOINT_NAME)
 
       val userClassPath = List.empty[URL]
       
       env.rpcEnv.setupEndpoint(ENDPOINT_NAME, new FlareExecutorBackend(executorId, proxyRpcEnv.address.host, cores, userClassPath, env, driverRef, cluster))
-   
-      cluster.send(ExecutorLaunched(executorId, proxyRpcEnv.address.host, proxyRpcEnv.address.port))
 
       env.rpcEnv.awaitTermination()      
     }
@@ -259,9 +256,7 @@ private[spark] object FlareExecutorBackend extends Logging {
   def main(args: Array[String]) {
     var executorId: String = null
     var clusterUrl: String = null
-    var bindHostname: String = FlareClusterConfiguration.DefaultBindHostname
-    var bindPort: Int = FlareClusterConfiguration.DefaultBindPort
-    var portRange: Int = FlareClusterConfiguration.DefaultPortRange
+    var hostname: String = FlareClusterConfiguration.DEFAULT_HOSTNAME
     var cores: Int = 1
 
     var argv = args.toList
@@ -271,15 +266,9 @@ private[spark] object FlareExecutorBackend extends Logging {
           executorId = value
           argv = tail
         case ("--hostname" | "-h") :: value :: tail =>
-          bindHostname = value
+          hostname = value
           argv = tail
-        case ("--port" | "-p") :: value :: tail =>
-          bindPort = value.toInt
-          argv = tail
-        case ("--port-range") :: value :: tail =>
-          portRange = value.toInt
-          argv = tail
-        case ("--cores") :: value :: tail =>
+        case ("--cores" | "-c") :: value :: tail =>
           cores = value.toInt
           argv = tail
         case value :: tail =>
@@ -294,7 +283,7 @@ private[spark] object FlareExecutorBackend extends Logging {
       }
     }
 
-    val clusterConf = FlareClusterConfiguration.fromUrl(clusterUrl, bindHostname, bindPort, portRange)
+    val clusterConf = FlareClusterConfiguration.fromUrl(clusterUrl, hostname)
 
     try {
       run(executorId, cores, clusterConf)

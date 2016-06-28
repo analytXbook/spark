@@ -1,6 +1,7 @@
 package org.apache.spark.deploy.flare
 
 import java.io.{File, IOException}
+import java.util.UUID
 
 import org.apache.spark.deploy.ExecutorState
 
@@ -11,7 +12,7 @@ import org.apache.spark.util.SignalLogger
 import org.jgroups.blocks.atomic.Counter
 
 private[spark] class FlareNode(
-    clusterConf: FlareClusterConfiguration,
+    args: FlareNodeArguments,
     workDirPath: Option[String])
   extends FlareClusterListener with Logging {
   
@@ -25,13 +26,16 @@ private[spark] class FlareNode(
     }
   
   val executors = new HashMap[String, FlareExecutorRunner]
-  
+
+  val clusterConf = args.clusterConf
   val cluster = FlareCluster(clusterConf)
-  var executorIdCounter: Counter = _
+  var executorIdCounter: FlareCounter = _
 
   var workDir: File = null
 
   val securityManager = new SecurityManager(new SparkConf)
+
+  val nodeId = UUID.randomUUID().toString
   
   private def createWorkDir() {
     workDir = workDirPath.map(new File(_)).getOrElse(new File(sparkHome, "work"))
@@ -51,50 +55,38 @@ private[spark] class FlareNode(
   
   private def joinCluster() = {
     cluster.addListener(this)
-    cluster.connect()
+    cluster.start(NodeClusterProfile(nodeId, args.hostname) )
     executorIdCounter = cluster.counter("executorId")
-    cluster.send(NodeJoined(0))
   }
 
-  override def onInitialize(initialize: Initialize) = {
-    logInfo("Driver initialized configuration, launching executors")
-    launchExecutors()
-  }
-
-  override def onDriverExited(driverExited: DriverExited): Unit = {
-    if (cluster.state.drivers.isEmpty) {
+  override def onDriverExited(data: DriverData): Unit = {
+    if (cluster.drivers.isEmpty) {
       logInfo("All drivers have exited, terminating executors and uninitializing cluster")
-      cluster.state.uninitialize()
+      cluster.reset()
       terminateExecutors()
-      executorIdCounter.set(0)
-      cluster.counter("driverId").set(0)
     }
   }
 
-  private def nextExecutorId(): Int = executorIdCounter.incrementAndGet.toInt
+  private def nextExecutorId(): Int = executorIdCounter.incrementAtomic().toInt
   
   private def launchExecutors() = {
-    if (cluster.state.isInitialized) {
-      logInfo(s"Configuration: ${cluster.state.properties}")
-      val conf = new SparkConf()
-      cluster.state.properties.foreach {
-        case (key, value) => conf.set(key, value)
-      }
+    logInfo(s"Configuration: ${cluster.properties}")
+    val conf = new SparkConf()
+    cluster.properties.foreach {
+      case (key, value) => conf.set(key, value)
+    }
 
-      val executorCount = conf.getInt("spark.flare.executorsPerNode", 1)
+    val executorCount = conf.getInt("spark.flare.executorsPerNode", 1)
 
-      logInfo(s"Launching $executorCount executors")
-      for (i <- 0 until executorCount) {
-        val executorId = nextExecutorId.toString
-        launchExecutor(executorId, conf)
-      }
-    } else {
-      logInfo("Waiting for driver to initialize executors")
+    logInfo(s"Launching $executorCount executors")
+    for (i <- 0 until executorCount) {
+      val executorId = nextExecutorId.toString
+      launchExecutor(executorId, conf)
     }
   }
   
   private def launchExecutor(executorId: String, conf: SparkConf) = {
-    val appDir = new File(workDir, cluster.state.appId)
+    val appDir = new File(workDir, cluster.appId)
     if (!appDir.exists() && !appDir.mkdir()) {
       log.warn("Failed to create directory " + appDir)
     }
@@ -120,6 +112,7 @@ private[spark] class FlareNode(
   }
 
   def onExecutorStateChanged(executorId: String, state: ExecutorState.Value, message: Option[String], exitCode: Option[Int]): Unit = {
+    /*
     import ExecutorState._
     state match {
       case KILLED | FAILED | LOST | EXITED => {
@@ -127,7 +120,7 @@ private[spark] class FlareNode(
         cluster.send(FlareExecutorLost(executorId, System.currentTimeMillis, s"Executor $state: $message"))
       }
       case _ =>
-    }
+    }*/
   }
 
   def start(): Unit = {
@@ -149,7 +142,7 @@ object FlareNode extends Logging {
     
     val nodeArgs = new FlareNodeArguments(args)
     
-    val node = new FlareNode(nodeArgs.clusterConf, Option(nodeArgs.workDir))
+    val node = new FlareNode(nodeArgs, Option(nodeArgs.workDir))
 
     node.start()
   }

@@ -1,6 +1,6 @@
 package org.apache.spark.scheduler.flare
 
-import org.apache.spark.{Logging, SparkEnv}
+import org.apache.spark.{Logging, SparkEnv, SparkException}
 import org.apache.spark.flare.{FlareCluster, _}
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
 import org.apache.spark.scheduler._
@@ -19,7 +19,8 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
   val conf = sc.conf
   val rpcEnv = sc.env.rpcEnv
 
-  val cluster = FlareCluster(flareUrl, conf)
+  val clusterConf = FlareClusterConfiguration.fromUrl(flareUrl, rpcEnv.address.host, sc.conf)
+  val cluster = FlareCluster(clusterConf)
   
   val listenerBus = sc.listenerBus
 
@@ -41,7 +42,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
   }
 
   override def applicationId(): String = {
-    cluster.state.appId
+    cluster.appId
   }
   
   def placeReservations(
@@ -153,14 +154,11 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
     return new DriverEndpoint(rpcEnv)
   }
 
-  override def onExecutorLost(executorLost: FlareExecutorLost): Unit = {
-    listenerBus.post(SparkListenerExecutorRemoved(executorLost.time, executorLost.executorId, executorLost.reason))
+  override def onExecutorExited(data: ExecutorData): Unit = {
+    listenerBus.post(SparkListenerExecutorRemoved(System.currentTimeMillis(), data.executorId, "Executor disconnected"))
   }
   
   override def start() {
-    cluster.connect()
-    cluster.addListener(this)
-
     val properties = {
       val builder = Map.newBuilder[String, String]
       for ((key, value) <- conf.getAll) {
@@ -170,21 +168,17 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
       builder.result
     }
 
-    if (cluster.state.isInitialized) {
-      //val existingProps = cluster.state.properties
-      //if (!properties.equals(existingProps))
-        //throw new SparkException("Attempting to connect to flare cluster with different app properties")
-    } else {
-      cluster.send(Initialize(super.applicationId, properties))
-    }
+    cluster.start(DriverClusterProfile(rpcEnv.address.host, rpcEnv.address.port, super.applicationId, properties))
+    cluster.addListener(this)
 
     driverEndpoint = rpcEnv.setupEndpoint(FlareSchedulerBackend.ENDPOINT_NAME, createDriverEndpoint())
     
-    driverId = cluster.counter("driverId").incrementAndGet().toInt
+    driverId = cluster.localData match {
+      case Some(DriverData(driverId, _, _)) => driverId
+      case _ => throw new SparkException("Expected local data to be set to driver data")
+    }
 
     EncodedId.enable(driverId)
-        
-    cluster.send(DriverJoined(driverId, driverEndpoint.address.host, driverEndpoint.address.port))
   }
   
   override def stop() {
