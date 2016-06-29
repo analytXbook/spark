@@ -9,7 +9,6 @@ import scala.collection.mutable.HashMap
 import org.apache.spark.{Logging, SecurityManager, SparkConf}
 import org.apache.spark.flare.{FlareCluster, _}
 import org.apache.spark.util.SignalLogger
-import org.jgroups.blocks.atomic.Counter
 
 private[spark] class FlareNode(
     args: FlareNodeArguments,
