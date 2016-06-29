@@ -46,7 +46,6 @@ case class ExecutorClusterProfile(executorId: String, hostname: String) extends 
 }
 
 case class DriverClusterProfile(hostname: String, port: Int, appId: String, properties: Map[String, String]) extends FlareClusterProfile with Logging {
-
   override def start(cluster: FlareCluster): Unit = {
     val client = cluster.client
     val ser = cluster.serializer.newInstance()
@@ -86,7 +85,9 @@ case class DriverClusterProfile(hostname: String, port: Int, appId: String, prop
 
     logInfo("Waiting for drivers")
     initializationBarrier.waitOnBarrier()
-    leaderLatch.close()
+
+    if (leaderLatch.getState() == LeaderLatch.State.STARTED)
+      leaderLatch.close()
 
     val driverIdCounter = cluster.counter("driverId", -1)
     val driverId = driverIdCounter.incrementAtomic().toInt
