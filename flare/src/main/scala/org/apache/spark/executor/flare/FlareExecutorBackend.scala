@@ -188,7 +188,8 @@ private[spark] class FlareExecutorBackend(
     case CleanUpFinishedTask(taskId) => {
       taskToReservationId.get(taskId) match {
         case Some(reservationId) => {
-          removeRunningTask(reservationId)
+          activeTasks.decrementAndGet()
+          rootPool.removeRunningTask(reservationId)
           reservationTasks.removeBinding(reservationId, taskId)
           taskToReservationId.remove(taskId)
         }
