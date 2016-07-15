@@ -1247,7 +1247,7 @@ private[spark] class BlockManager(
 
 
 private[spark] object BlockManager extends Logging {
-  private val ID_GENERATOR = new IdGenerator
+  private val ID_GENERATOR = IntegerIdGenerator()
 
   /**
    * Attempt to clean up a ByteBuffer if it is memory-mapped. This uses an *unsafe* Sun API that

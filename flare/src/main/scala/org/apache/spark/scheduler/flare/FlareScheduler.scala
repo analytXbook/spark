@@ -10,7 +10,7 @@ import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.scheduler._
 import org.apache.spark.storage.BlockManagerId
-import org.apache.spark.util.EncodedId
+import org.apache.spark.util.{EncodedId, LongIdGenerator}
 
 import scala.collection.mutable.{ArrayBuffer, HashMap}
 
@@ -26,9 +26,9 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   
   val managersByStageIdAndAttempt = new HashMap[Int, HashMap[Int, FlareReservationManager]]
   
-  val nextTaskId = new AtomicLong(0)
+  val taskIdGenerator = LongIdGenerator(sc)
   
-  def newTaskId = EncodedId.encodeIfEnabled(nextTaskId.getAndIncrement)
+  def newTaskId = taskIdGenerator.next
   
   val mapOutputTracker = SparkEnv.get.mapOutputTracker
  
