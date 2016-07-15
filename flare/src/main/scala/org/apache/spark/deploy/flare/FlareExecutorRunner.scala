@@ -30,8 +30,7 @@ private[spark] class FlareExecutorRunner(
   private var stdoutAppender: FileAppender = _
   private var stderrAppender: FileAppender = _ 
   
-  private val EXECUTOR_TERMINATE_TIMEOUT_MS = 10 * 1000
-  private val EXECUTOR_TERMINATE_TIMEOUT_MS = 120 * 1000
+  private val EXECUTOR_TERMINATE_TIMEOUT_MS = 15 * 1000
 
   private var shutdownHook: AnyRef = _
 
