@@ -178,7 +178,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
       case _ => throw new SparkException("Expected local data to be set to driver data")
     }
 
-    EncodedId.enable(driverId)
+    sc.setEncodedIdData(driverId)
   }
   
   override def stop() {

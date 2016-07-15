@@ -17,15 +17,45 @@
 
 package org.apache.spark.util
 
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 
-/**
- * A util used to get a unique generation ID. This is a wrapper around Java's
- * AtomicInteger. An example usage is in BlockManager, where each BlockManager
- * instance would start an RpcEndpoint and we use this utility to assign the RpcEndpoints'
- * unique names.
- */
-private[spark] class IdGenerator {
-  private val id = new AtomicInteger
-  def next: Int = id.incrementAndGet
+import org.apache.spark.{SparkConf, SparkContext}
+
+private[spark] sealed trait IdGenerator[T] {
+  def next(): T
+}
+
+private object IdGenerator {
+  def getData(conf: SparkConf) = conf.getOption("encodedIdData").map(_.toInt)
+  def getData(sc: SparkContext) = sc.getEncodedIdData
+}
+
+private[spark] class LongIdGenerator(data: => Option[Int] = None) extends IdGenerator[Long] {
+  val value = new AtomicLong()
+  override def next(): Long = {
+    def nextValue = value.getAndIncrement()
+    data.fold(nextValue)(EncodedId(nextValue, _))
+  }
+}
+
+private[spark] object LongIdGenerator {
+  def apply(): LongIdGenerator = new LongIdGenerator()
+
+  def apply(conf: SparkConf): LongIdGenerator = new LongIdGenerator(IdGenerator.getData(conf))
+  def apply(sc: SparkContext): LongIdGenerator = new LongIdGenerator(IdGenerator.getData(sc))
+}
+
+private[spark] class IntegerIdGenerator(data: => Option[Int] = None) extends IdGenerator[Int] {
+  val value = new AtomicInteger()
+  override def next(): Int = {
+    def nextValue = value.getAndIncrement()
+    data.fold(nextValue)(EncodedId(nextValue, _))
+  }
+}
+
+private[spark] object IntegerIdGenerator {
+  def apply(): IntegerIdGenerator = new IntegerIdGenerator()
+
+  def apply(conf: SparkConf): IntegerIdGenerator = new IntegerIdGenerator(IdGenerator.getData(conf))
+  def apply(sc: SparkContext): IntegerIdGenerator = new IntegerIdGenerator(IdGenerator.getData(sc))
 }
