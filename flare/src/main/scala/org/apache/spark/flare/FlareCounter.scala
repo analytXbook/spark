@@ -31,7 +31,6 @@ class FlareCounter(name: String, globalValue: DistributedAtomicLong) extends Log
   }
 
   private[flare] def initialize(initialValue: Long) = {
-    globalValue.initialize(initialValue)
     setLocal(initialValue)
   }
 
@@ -60,7 +59,12 @@ class FlareCounter(name: String, globalValue: DistributedAtomicLong) extends Log
   }
 
   def incrementAtomic(): Long = {
-    val value = globalValue.increment().postValue()
+    val result = globalValue.increment()
+    if (!result.succeeded()) {
+      logWarning("Atomic increment failed")
+    }
+
+    val value = result.postValue()
     setLocal(value)
     value
   }
@@ -100,5 +104,5 @@ class FlareCounter(name: String, globalValue: DistributedAtomicLong) extends Log
 }
 
 object FlareCounter {
-  private val updateThreadPool = ThreadUtils.newDaemonCachedThreadPool("async-counter-update-thread-pool", 4)
+  private val updateThreadPool = ThreadUtils.newDaemonCachedThreadPool("async-counter-update-thread-pool", 1)
 }

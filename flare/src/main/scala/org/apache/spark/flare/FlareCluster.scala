@@ -19,7 +19,7 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
   private val RETRY_WAIT_MILLIS = 5000
   private val MAX_RECONNECT_ATTEMPTS = 3
 
-  val client = CuratorFrameworkFactory.builder()
+  val zk = CuratorFrameworkFactory.builder()
     .connectString(conf.zkUrl)
     .sessionTimeoutMs(ZK_SESSION_TIMEOUT_MILLIS)
     .connectionTimeoutMs(ZK_CONNECTION_TIMEOUT_MILLIS)
@@ -31,48 +31,56 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
 
   val serializer: JavaSerializer = new JavaSerializer(conf.sparkConf)
 
-  val counterService = new FlareCounterService(client)
+  val counterService = new FlareCounterService(zk)
 
   class CacheListenerBroadcaster[T <: FlareClusterMemberData : ClassTag](
     addedEvent: T => FlareClusterEvent,
     removedEvent: T => FlareClusterEvent,
     updatedEvent: T => FlareClusterEvent) extends PathChildrenCacheListener {
     import PathChildrenCacheEvent.Type._
-    override def childEvent(client: CuratorFramework, event: PathChildrenCacheEvent): Unit = {
+    override def childEvent(zk: CuratorFramework, event: PathChildrenCacheEvent): Unit = {
       def ser = serializer.newInstance()
-      val data = ser.fromBytes[T](event.getData.getData)
-      event.getType match {
-        case CHILD_ADDED => eventBus.post(addedEvent(data))
-        case CHILD_REMOVED => eventBus.post(removedEvent(data))
-        case CHILD_UPDATED => eventBus.post(updatedEvent(data))
+      Option(event.getData()) foreach {childData =>
+        val data = ser.fromBytes[T](childData.getData())
+        event.getType match {
+          case CHILD_ADDED => eventBus.post(addedEvent(data))
+          case CHILD_REMOVED => eventBus.post(removedEvent(data))
+          case CHILD_UPDATED => eventBus.post(updatedEvent(data))
+        }
       }
     }
   }
 
-  private val driverCache = new PathChildrenCache(client, "/driver", true)
-  driverCache.getListenable.addListener(
-    new CacheListenerBroadcaster[DriverData](FlareDriverJoined.apply, FlareDriverExited.apply, FlareDriverUpdated.apply))
-
-  private val nodeCache = new PathChildrenCache(client, "/node", true)
-  nodeCache.getListenable.addListener(
-    new CacheListenerBroadcaster[NodeData](FlareNodeJoined.apply, FlareNodeExited.apply, FlareNodeUpdated.apply))
-
-  private val executorCache = new PathChildrenCache(client, "/executor", true)
-  executorCache.getListenable.addListener(
-    new CacheListenerBroadcaster[ExecutorData](FlareExecutorJoined.apply, FlareExecutorExited.apply, FlareExecutorUpdated.apply))
+  private var driverCache: PathChildrenCache = _
+  private var nodeCache: PathChildrenCache = _
+  private var executorCache: PathChildrenCache = _
 
   private var localMemberData: Option[FlareClusterMemberData] = None
-
   private var localProfile: Option[FlareClusterProfile] = None
+
+  private def startMemberCaches() = {
+    driverCache = new PathChildrenCache(zk, "/driver", true)
+    driverCache.getListenable.addListener(
+      new CacheListenerBroadcaster[DriverData](FlareDriverJoined.apply, FlareDriverExited.apply, FlareDriverUpdated.apply))
+    driverCache.start(StartMode.BUILD_INITIAL_CACHE)
+
+    nodeCache = new PathChildrenCache(zk, "/node", true)
+    nodeCache.getListenable.addListener(
+      new CacheListenerBroadcaster[NodeData](FlareNodeJoined.apply, FlareNodeExited.apply, FlareNodeUpdated.apply))
+    nodeCache.start(StartMode.BUILD_INITIAL_CACHE)
+
+    executorCache = new PathChildrenCache(zk, "/executor", true)
+    executorCache.getListenable.addListener(
+      new CacheListenerBroadcaster[ExecutorData](FlareExecutorJoined.apply, FlareExecutorExited.apply, FlareExecutorUpdated.apply))
+    executorCache.start(StartMode.BUILD_INITIAL_CACHE)
+  }
 
   def start(profile: FlareClusterProfile): Unit = {
     localProfile = Some(profile)
-    client.start()
-    driverCache.start(StartMode.BUILD_INITIAL_CACHE)
-    nodeCache.start(StartMode.BUILD_INITIAL_CACHE)
-    executorCache.start(StartMode.BUILD_INITIAL_CACHE)
-    counterService.start()
+    zk.start()
+    startMemberCaches()
     profile.start(this)
+    counterService.start()
     eventBus.start(null)
   }
 
@@ -80,7 +88,7 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
     driverCache.close()
     nodeCache.close()
     executorCache.close()
-    client.close()
+    zk.close()
     eventBus.stop()
   }
 
@@ -111,12 +119,12 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
 
   def appId: String = {
     val ser = serializer.newInstance
-    ser.fromBytes[String](client.getData.forPath("/init/appId"))
+    ser.fromBytes[String](zk.getData.forPath("/app/id"))
   }
 
   def properties: Map[String, String] = {
     val ser = serializer.newInstance
-    ser.fromBytes[Map[String, String]](client.getData.forPath("/init/properties"))
+    ser.fromBytes[Map[String, String]](zk.getData.forPath("/app/properties"))
   }
 
   def addListener(listener: FlareClusterListener): Unit = {
@@ -127,13 +135,13 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
     counterService.create(name, initialValue)
   }
 
-  private[flare] def register(data: FlareClusterMemberData) = {
+  private[spark] def register(data: FlareClusterMemberData) = {
     if (localMemberData.isDefined) {
       throw new SparkException("Attempting to register after already being registered")
     }
     localMemberData = Some(data)
     val ser = serializer.newInstance
-    client.create().withMode(CreateMode.EPHEMERAL).forPath(data.toPath, ser.toBytes(data))
+    zk.create().creatingParentsIfNeeded().withMode(CreateMode.EPHEMERAL).forPath(data.toPath, ser.toBytes(data))
   }
 
   private[spark] def localData = localMemberData

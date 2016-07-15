@@ -11,28 +11,28 @@ import org.apache.curator.utils.ZKPaths
 
 import scala.collection.JavaConverters._
 
-class FlareCounterService(client: CuratorFramework, path: String = "/counters"){
-  private val cache = new PathChildrenCache(client, path, true)
+class FlareCounterService(zk: CuratorFramework, path: String = "/counter"){
+  private var cache: PathChildrenCache = _
   private val localCounters = new ConcurrentHashMap[String, FlareCounter]().asScala
 
-  private val childListener = new PathChildrenCacheListener {
-    import PathChildrenCacheEvent.Type._
-    override def childEvent(client: CuratorFramework, event: PathChildrenCacheEvent): Unit = {
-      event.getType match {
-        case CHILD_UPDATED => {
-          val counterName = ZKPaths.getNodeFromPath(event.getData().getPath())
-          localCounters.get(counterName).foreach(_.setLocal(bytesToLong(event.getData.getData)))
-        }
-        case _ => {
-          
+  def start() = {
+    cache = new PathChildrenCache(zk, path, true)
+    val childListener = new PathChildrenCacheListener {
+      import PathChildrenCacheEvent.Type._
+      override def childEvent(zk: CuratorFramework, event: PathChildrenCacheEvent): Unit = {
+        event.getType match {
+          case CHILD_UPDATED => {
+            val counterName = ZKPaths.getNodeFromPath(event.getData().getPath())
+            localCounters.get(counterName).foreach(_.setLocal(bytesToLong(event.getData.getData)))
+          }
+          case _ => {
+
+          }
         }
       }
     }
-  }
-
-  def start() = {
-    cache.start(true)
     cache.getListenable.addListener(childListener)
+    cache.start(true)
   }
 
   def close() = {
@@ -45,7 +45,7 @@ class FlareCounterService(client: CuratorFramework, path: String = "/counters"){
       case None => {
         val counterPath = ZKPaths.makePath(path, name)
         val atomicLong = new DistributedAtomicLong(
-          client, counterPath, new ExponentialBackoffRetry(1000, 3))
+          zk, counterPath, new ExponentialBackoffRetry(1000, 3))
 
         val counter = new FlareCounter(name, atomicLong)
 
