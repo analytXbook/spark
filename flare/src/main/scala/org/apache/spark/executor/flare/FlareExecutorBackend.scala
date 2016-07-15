@@ -29,8 +29,9 @@ private[spark] class FlareExecutorBackend(
     userClassPath: Seq[URL],
     env: SparkEnv,
     proxyRef: RpcEndpointRef,
+    proxyRpcEnv: RpcEnv,
     cluster: FlareCluster)
-  extends ThreadSafeRpcEndpoint with ExecutorBackend with Logging {
+  extends ThreadSafeRpcEndpoint with ExecutorBackend with FlareClusterListener with Logging {
 
   case object AttemptLaunchReservation
   case class RemoveRunningTask(reservationId: FlareReservationId)
@@ -134,6 +135,7 @@ private[spark] class FlareExecutorBackend(
   private[this] val ser: SerializerInstance = env.closureSerializer.newInstance()
   
   override def onStart() = {
+    cluster.addListener(this)
     proxyRef.askWithRetry[RegisteredExecutorResponse](RegisterExecutor(executorId, self, cores, Map.empty)) match {
       case RegisteredExecutor => {
         executor = new Executor(executorId, hostname, env, List.empty, isLocal = false)
@@ -144,7 +146,17 @@ private[spark] class FlareExecutorBackend(
       }
     }
   }
-  
+
+  override def onDriverExited(data: DriverData): Unit = {
+    if (cluster.drivers.isEmpty) {
+      logInfo("All drivers have exited, shutting down")
+      executor.stop()
+      stop()
+      rpcEnv.shutdown()
+      proxyRpcEnv.shutdown()
+    }
+  }
+
   override def onDisconnected(remoteAddress: RpcAddress): Unit = {
 
   }
@@ -248,9 +260,10 @@ private[spark] object FlareExecutorBackend extends Logging {
 
       val userClassPath = List.empty[URL]
       
-      env.rpcEnv.setupEndpoint(ENDPOINT_NAME, new FlareExecutorBackend(executorId, proxyRpcEnv.address.host, cores, userClassPath, env, driverRef, cluster))
+      env.rpcEnv.setupEndpoint(ENDPOINT_NAME, new FlareExecutorBackend(executorId, proxyRpcEnv.address.host, cores, userClassPath, env, driverRef, proxyRpcEnv, cluster))
 
-      env.rpcEnv.awaitTermination()      
+      env.rpcEnv.awaitTermination()
+      proxyRpcEnv.awaitTermination()
     }
   }
   

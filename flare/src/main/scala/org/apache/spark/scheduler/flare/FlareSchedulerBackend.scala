@@ -171,6 +171,10 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
     cluster.start(DriverClusterProfile(rpcEnv.address.host, rpcEnv.address.port, super.applicationId, properties))
     cluster.addListener(this)
 
+    val driverIdCounter = cluster.counter("driverId")
+    driverId = driverIdCounter.incrementAtomic().toInt
+    cluster.register(DriverData(driverId, rpcEnv.address.host, rpcEnv.address.port))
+
     driverEndpoint = rpcEnv.setupEndpoint(FlareSchedulerBackend.ENDPOINT_NAME, createDriverEndpoint())
     
     driverId = cluster.localData match {

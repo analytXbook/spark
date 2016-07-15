@@ -31,6 +31,7 @@ private[spark] class FlareExecutorRunner(
   private var stderrAppender: FileAppender = _ 
   
   private val EXECUTOR_TERMINATE_TIMEOUT_MS = 10 * 1000
+  private val EXECUTOR_TERMINATE_TIMEOUT_MS = 120 * 1000
 
   private var shutdownHook: AnyRef = _
 
@@ -91,16 +92,15 @@ private[spark] class FlareExecutorRunner(
       }
       val exited = Utils.waitForProcess(process, EXECUTOR_TERMINATE_TIMEOUT_MS)
       if (exited) {
-        logWarning("Failed to terminate process: " + process +
-          ". This process will likely be orphaned.")
+        logWarning("Failed to terminate process " + process +
+          "gracefully. Destroying forcibly, this process may become orphaned.")
+        process.destroyForcibly()
       }
 
       val exitCode = if (exited) Some(process.exitValue()) else None
 
       node.onExecutorStateChanged(executorId, state, message, exitCode)
     }
-    
-    //notify node
   }
   
   def kill() = {
@@ -148,7 +148,6 @@ private[spark] class FlareExecutorRunner(
       val message = "Command exited with code " + exitCode
 
       node.onExecutorStateChanged(executorId, state, Some(message), Some(exitCode))
-
     } catch {
       case interrupted: InterruptedException => {
         logInfo("Runner thread for executor " + executorId + " interrupted")

@@ -113,7 +113,10 @@ private[spark] class FlareReservationManager(
       reservations += randomExecutor
     }
 
-    reservations.groupBy(identity).mapValues(_.size)
+    val reservationCounts = reservations.groupBy(identity).mapValues(_.size)
+    pendingReservations ++= reservationCounts
+
+    reservationCounts
   }
 
   def getMatchedLocality(task: Task[_], executorId: String, host: String): TaskLocality.Value = {
@@ -265,6 +268,8 @@ private[spark] class FlareReservationManager(
   def isMaxParallelism: Boolean = parallelismLimit.fold(false)(runningTaskCount >= _)
    
   def getTask(executorId: String, host: String): Option[TaskDescription] = {
+    pendingReservations(executorId) -= 1
+
     val currentTime = clock.getTimeMillis()
     val selectedTask: Option[Int] = {
       if (unlaunchedConstrainedTasks.contains(executorId)) {

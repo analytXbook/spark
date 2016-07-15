@@ -8,68 +8,116 @@ import org.apache.spark.util.SerializerUtils._
 
 sealed trait FlareClusterProfile {
   def start(cluster: FlareCluster): Unit
-  def reset(cluster: FlareCluster): Unit
+  def reset(cluster: FlareCluster): Unit =
+    throw new UnsupportedOperationException("Only nodes can reset the cluster state")
 }
 
 case class NodeClusterProfile(nodeId: String, hostname: String) extends FlareClusterProfile with Logging {
   override def start(cluster: FlareCluster): Unit = {
-    val initializationBarrier = new DistributedBarrier(cluster.client, "/init/barrier")
+    val zk = cluster.zk
+    val initializationBarrier = new DistributedBarrier(zk, "/init/barrier")
     if (cluster.drivers.isEmpty) {
-      logInfo("No connected drivers, setting barrier")
+      logInfo("No drivers found")
       initializationBarrier.setBarrier()
+
+      if (cluster.nodes.isEmpty) {
+        if (zk.checkExists.forPath("/reset") != null) {
+          logInfo("Cleaning up previous cluster state")
+          zk.delete().deletingChildrenIfNeeded().forPath("/reset")
+        }
+      }
     }
 
+    logInfo("Waiting for cleanup on previous app")
+    val resetBarrier = new DistributedBarrier(zk, "/reset/barrier")
+    resetBarrier.waitOnBarrier()
+
     cluster.register(NodeData(nodeId, hostname))
+
     logInfo("Waiting for drivers")
     initializationBarrier.waitOnBarrier()
   }
 
   override def reset(cluster: FlareCluster): Unit = {
-    val initializationBarrier = new DistributedBarrier(cluster.client, "/init/barrier")
+    val zk = cluster.zk
+    val resetBarrier = new DistributedBarrier(zk, "/reset/barrier")
+    resetBarrier.setBarrier()
 
-    val leaderLatch = new LeaderLatch(cluster.client, "/init/reset-leader")
+    val resetLeader = new LeaderLatch(zk, "/reset/leader")
 
+    val initializationBarrier = new DistributedBarrier(zk, "/init/barrier")
+    initializationBarrier.setBarrier()
+
+    resetLeader.addListener(new LeaderLatchListener() {
+      override def isLeader() = {
+        logInfo("Watching for all executors to exit")
+
+        var executors = cluster.executors
+
+        while(!executors.isEmpty) {
+          logInfo(s"Remaining executors: ${executors.map(_.executorId).mkString(",")}")
+          Thread.sleep(1000)
+          executors = cluster.executors
+        }
+
+        resetBarrier.removeBarrier()
+      }
+      override def notLeader() = {
+        logDebug("Not reset leader, a different node is watching for all executors to exit")
+      }
+    })
+
+    resetLeader.start()
+
+    logInfo("Waiting on all executors to exit")
+    resetBarrier.waitOnBarrier()
+
+    resetLeader.close()
+
+    logInfo("Waiting for drivers")
+    initializationBarrier.waitOnBarrier()
   }
 }
 
 case class ExecutorClusterProfile(executorId: String, hostname: String) extends FlareClusterProfile with Logging {
   override def start(cluster: FlareCluster): Unit = {
-    val initializationBarrier = new DistributedBarrier(cluster.client, "/init/barrier")
+    val initializationBarrier = new DistributedBarrier(cluster.zk, "/init/barrier")
 
     cluster.register(ExecutorData(executorId, hostname))
     initializationBarrier.waitOnBarrier()
-  }
-
-  override def reset(cluster: FlareCluster): Unit = {
-    throw new SparkException("Executor attempted to reset cluster")
   }
 }
 
 case class DriverClusterProfile(hostname: String, port: Int, appId: String, properties: Map[String, String]) extends FlareClusterProfile with Logging {
   override def start(cluster: FlareCluster): Unit = {
-    val client = cluster.client
+    val zk = cluster.zk
     val ser = cluster.serializer.newInstance()
 
-    val initializationBarrier = new DistributedBarrier(client, "/init/barrier")
-    val leaderLatch = new LeaderLatch(client, "/init/leader")
+    val resetBarrier = new DistributedBarrier(zk, "/reset/barrier")
+
+    logInfo("Waiting for cleanup on previous app")
+    resetBarrier.waitOnBarrier()
+
+    val initializationBarrier = new DistributedBarrier(zk, "/init/barrier")
+    val leaderLatch = new LeaderLatch(zk, "/init/leader")
 
     if (cluster.drivers.isEmpty) {
       logInfo("No connected drivers, setting barrier")
+      initializationBarrier.setBarrier()
       leaderLatch.addListener(new LeaderLatchListener() {
         override def isLeader() = {
-          logInfo("Acquired leadership, initializing app")
+          logInfo("Initializing app")
 
-          client.delete().deletingChildrenIfNeeded().forPath("/counters")
-          client.inTransaction()
-            .delete().forPath("/init/appId")
-            .and()
-            .create().withMode(CreateMode.PERSISTENT).forPath("/init/appId", ser.toBytes(appId))
-            .and()
-            .delete().forPath("/init/properties")
-            .and()
-            .create().withMode(CreateMode.PERSISTENT).forPath("/init/properties", ser.toBytes(properties))
-            .and()
-            .commit()
+          if (zk.checkExists().forPath("/app") != null) {
+            zk.delete().deletingChildrenIfNeeded().forPath("/app")
+          }
+
+          if (zk.checkExists().forPath("/counter") != null) {
+            zk.delete().deletingChildrenIfNeeded().forPath("/counter")
+          }
+
+          zk.create().creatingParentsIfNeeded().withMode(CreateMode.PERSISTENT).forPath("/app/id", ser.toBytes(appId))
+          zk.create().creatingParentsIfNeeded().withMode(CreateMode.PERSISTENT).forPath("/app/properties", ser.toBytes(properties))
 
           logInfo("Removing initializing barrier")
           initializationBarrier.removeBarrier()
@@ -79,24 +127,15 @@ case class DriverClusterProfile(hostname: String, port: Int, appId: String, prop
           logInfo("Waiting for leader driver to initialize app")
         }
       })
-      initializationBarrier.setBarrier()
+
       leaderLatch.start()
     }
 
-    logInfo("Waiting for drivers")
+    logInfo("Waiting for initialization")
     initializationBarrier.waitOnBarrier()
 
     if (leaderLatch.getState() == LeaderLatch.State.STARTED)
       leaderLatch.close()
 
-    val driverIdCounter = cluster.counter("driverId", -1)
-    val driverId = driverIdCounter.incrementAtomic().toInt
-    cluster.register(DriverData(driverId, hostname, port))
-  }
-
-  override def reset(cluster: FlareCluster): Unit = {
-    throw new SparkException("Driver attempted to reset cluster")
   }
 }
-
-
