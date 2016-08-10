@@ -80,7 +80,6 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
     zk.start()
     startMemberCaches()
     profile.start(this)
-    counterService.start()
     eventBus.start(null)
   }
 
@@ -131,8 +130,8 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
     eventBus.addListener(listener)
   }
 
-  def counter(name: String, initialValue: Long = 0l): FlareCounter = {
-    counterService.create(name, initialValue)
+  def counter(name: String): FlareCounter = {
+    counterService.create(name)
   }
 
   private[spark] def register(data: FlareClusterMemberData) = {

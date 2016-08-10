@@ -2,6 +2,7 @@ package org.apache.spark.scheduler.flare
 
 import java.io.NotSerializableException
 import java.nio.ByteBuffer
+import java.util.Properties
 import java.util.concurrent.ConcurrentHashMap
 
 import org.apache.spark.TaskState.TaskState
@@ -37,14 +38,13 @@ private[spark] class FlareReservationManager(
   
   val tasks = taskSet.tasks
   val numTasks = tasks.length
-    
-  val launchedConstrainedTasks = new HashMap[String, Int]
-  
+
   val unlaunchedConstrainedTasks = new HashMap[String, Set[Int]] with MultiMap[String, Int]
   val unlaunchedUnconstrainedTasks = new ListBuffer[Int]
-  
-  val pendingReservations = new HashMap[String, Int]
-  
+
+  val pendingConstrainedTaskReservations = new HashMap[Int, Set[String]] with MultiMap[Int, String]
+  val pendingReservations = new HashMap[String, Int].withDefaultValue(0)
+
   val runningTasks = new HashSet[Long]
 
   def runningTaskCount: Int = runningTasks.size
@@ -56,7 +56,11 @@ private[spark] class FlareReservationManager(
 
   var tasksSuccessful = 0
 
+  val numFailures = new Array[Int](numTasks)
+
   val recentExceptions = HashMap[String, (Int, Long)]()
+
+  val failedExecutors = new HashMap[Int, HashMap[String, Long]]()
 
   val epoch = scheduler.mapOutputTracker.getEpoch
   logDebug("Epoch for " + taskSet + ": " + epoch)
@@ -65,6 +69,32 @@ private[spark] class FlareReservationManager(
   }
 
   var isZombie = false
+
+
+  val reservationGroups = {
+    def getGroupDescription(properties: Properties, index: Int): Option[FlareReservationGroupDescription] = {
+      val prefix = s"spark.flare.pool[$index]"
+      Option(properties.getProperty(s"$prefix.name")).map { name =>
+        val maxShare = Option(properties.getProperty(s"$prefix.maxShare")).map(_.toInt)
+        val minShare = Option(properties.getProperty(s"$prefix.minShare")).map(_.toInt)
+        val weight = Option(properties.getProperty(s"$prefix.weight")).map(_.toInt)
+        FlareReservationGroupDescription(name, minShare, maxShare, weight)
+      }
+    }
+
+    var groups = Seq.empty[FlareReservationGroupDescription]
+
+    var groupIndex = 0
+    var nextGroup = getGroupDescription(taskSet.properties, groupIndex)
+
+    while (nextGroup.isDefined) {
+      groups = groups :+ nextGroup.get
+      groupIndex += 1
+      nextGroup = getGroupDescription(taskSet.properties, groupIndex)
+    }
+
+    groups
+  }
 
   def addRunningTask(taskId: Long) {
     runningTasks.add(taskId)
@@ -102,6 +132,7 @@ private[spark] class FlareReservationManager(
         } else {
           for (targetExecutor <- Random.shuffle(preferredExecutors.take(probeRatio.round.toInt))) {
             unlaunchedConstrainedTasks.addBinding(targetExecutor, index)
+            pendingConstrainedTaskReservations.addBinding(index, targetExecutor)
             reservations += targetExecutor
           }
         }
@@ -117,6 +148,45 @@ private[spark] class FlareReservationManager(
     pendingReservations ++= reservationCounts
 
     reservationCounts
+  }
+
+  def replacementReservations(taskId: Long): Map[String, Int] = {
+    val index = taskInfos(taskId).index
+    val task = tasks(index)
+
+    val triedExecutors = failedExecutors.get(index).map(_.keySet.toSeq).getOrElse(Seq.empty)
+
+    val executor = if (task.preferredLocations.isEmpty) {
+      val untriedExecutors = scheduler.executors.diff(triedExecutors)
+      unlaunchedUnconstrainedTasks += index
+
+      if (untriedExecutors.isEmpty) {
+        logDebug(s"All executors have been tried for failed task $taskId, selecting a random executor")
+        randomExecutor
+      } else {
+        untriedExecutors(Random.nextInt(untriedExecutors.length))
+      }
+    } else {
+      val pendingExecutors = pendingConstrainedTaskReservations.get(index).map(_.toSeq).getOrElse(List.empty)
+
+      val preferredExecutors = task.preferredLocations.flatMap {
+        case ExecutorCacheTaskLocation(host, executorId) => List(executorId)
+        case taskLocation => scheduler.executorsByHost.get(taskLocation.host).getOrElse(List.empty)
+      }.diff(pendingExecutors).diff(triedExecutors)
+
+      if (preferredExecutors.isEmpty) {
+        logDebug(s"No additional executors could be found matching placement constraints for failed task $taskId, allowing task to run unconstrained")
+        unlaunchedUnconstrainedTasks += index
+        randomExecutor
+      } else {
+
+        val targetExecutor = preferredExecutors(Random.nextInt(preferredExecutors.length))
+        unlaunchedConstrainedTasks.addBinding(targetExecutor, index)
+        targetExecutor
+      }
+    }
+    pendingReservations(executor) += 1
+    Map(executor -> 1)
   }
 
   def getMatchedLocality(task: Task[_], executorId: String, host: String): TaskLocality.Value = {
@@ -136,12 +206,10 @@ private[spark] class FlareReservationManager(
 
   def abort(message: String, exception: Option[Throwable] = None) = {
     scheduler.dagScheduler.taskSetFailed(taskSet, message, exception)
-    attemptFinishReservation()
+    isZombie = true
+    maybeFinishTaskSet()
   }
 
-  def executorLost(executorId: String, host: String, reason: ExecutorLossReason)  = {
-
-  }
 
   def canFetchMoreResults(size: Long): Boolean = true
 
@@ -151,7 +219,7 @@ private[spark] class FlareReservationManager(
     scheduler.dagScheduler.taskGettingResult(info)
   }
 
-  def attemptFinishReservation() = {
+  def maybeFinishTaskSet() = {
     if (isZombie && runningTasks == 0) {
       scheduler.taskSetFinished(this)
     }
@@ -180,16 +248,15 @@ private[spark] class FlareReservationManager(
         " because task " + index + " has already completed successfully")
     }
 
-
-    attemptFinishReservation()
+    maybeFinishTaskSet()
   }
 
 
-  def handleFailedTask(taskId: Long, state: TaskState, reason: TaskEndReason): Unit = {
+  def handleFailedTask(taskId: Long, state: TaskState, reason: TaskEndReason): Map[String, Int] = {
     val taskInfo = taskInfos(taskId)
     val index = taskInfo.index
     if (taskInfo.failed) {
-      return
+      return Map.empty
     }
     removeRunningTask(taskId)
     taskInfo.markFailed()
@@ -217,7 +284,7 @@ private[spark] class FlareReservationManager(
             .format(taskInfo.id, taskSet.id, taskId, ef.description))
           abort("Task %s in stage %s (TID %d) had a not serializable result: %s".format(
             taskInfo.id, taskSet.id, taskId, ef.description))
-          return
+          return Map.empty
         }
         val key = ef.description
         val now = clock.getTimeMillis()
@@ -260,13 +327,28 @@ private[spark] class FlareReservationManager(
         None
     }
 
-
+    failedExecutors.getOrElseUpdate(index, new HashMap[String, Long]()).put(taskInfo.executorId, clock.getTimeMillis())
 
     scheduler.dagScheduler.taskEnded(tasks(index), reason, null, null, taskInfo, taskMetrics)
+
+    if (!isZombie && state != TaskState.KILLED
+      && reason.isInstanceOf[TaskFailedReason]
+      && reason.asInstanceOf[TaskFailedReason].countTowardsTaskFailures) {
+      numFailures(index) += 1
+      if (numFailures(index) >= maxTaskFailures) {
+        val failureReason = s"Task $index in stage ${taskSet.id} failed $maxTaskFailures times"
+        logError(s"$failureReason; aborting job")
+        abort(s"$failureReason, most recent failure: \n Driver Stacktrace:", failureException)
+        return Map.empty
+      }
+    }
+
+    maybeFinishTaskSet()
+    replacementReservations(taskId)
   }
 
   def isMaxParallelism: Boolean = parallelismLimit.fold(false)(runningTaskCount >= _)
-   
+
   def getTask(executorId: String, host: String): Option[TaskDescription] = {
     pendingReservations(executorId) -= 1
 
@@ -274,6 +356,7 @@ private[spark] class FlareReservationManager(
     val selectedTask: Option[Int] = {
       if (unlaunchedConstrainedTasks.contains(executorId)) {
         val index = unlaunchedConstrainedTasks(executorId).head
+        pendingConstrainedTaskReservations.removeBinding(index, executorId)
         unlaunchedConstrainedTasks.removeBinding(executorId, index)
         Some(index)
       }
@@ -303,13 +386,13 @@ private[spark] class FlareReservationManager(
         case NonFatal(e) => {
           val msg = s"Failed to serialize task $taskId, not attempting to retry it."
           logError(msg, e)
-          abort(s"$msg Exception during serialization: $e")
+          abort(s"$msg Exception during serialization", Some(e))
           throw new TaskNotSerializableException(e)
         }
       }
       
       val taskName = s"task ${info.id} in stage ${taskSet.id}"
-      logInfo(s"Starting $taskName (TID $taskId, $host, $executorId, partition ${task.partitionId}," +
+      logDebug(s"Starting $taskName (TID $taskId, $host, $executorId, partition ${task.partitionId}," +
             s"$taskLocality, ${serializedTask.limit} bytes)")
       
       scheduler.dagScheduler.taskStarted(task, info)

@@ -23,6 +23,10 @@
       <artifactId>spark-core_${scala.binary.version}</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>redis.clients</groupId>
+      <artifactId>jedis</artifactId>
+    </dependency>
 
     <!-- Explicit listing of transitive deps that are shaded. Otherwise, odd compiler crashes. -->
     <dependency>

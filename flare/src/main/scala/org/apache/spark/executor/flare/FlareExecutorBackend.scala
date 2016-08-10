@@ -15,7 +15,7 @@ import org.apache.spark.scheduler.flare.FlareMessages._
 import org.apache.spark.scheduler.flare._
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.storage.BlockManagerMaster
-import org.apache.spark.util.{SignalLogger, ThreadUtils}
+import org.apache.spark.util.{ShutdownHookManager, SignalLogger, ThreadUtils}
 
 import scala.collection.mutable
 import scala.collection.mutable.{HashMap, MultiMap, Set}
@@ -30,7 +30,8 @@ private[spark] class FlareExecutorBackend(
     env: SparkEnv,
     proxyRef: RpcEndpointRef,
     proxyRpcEnv: RpcEnv,
-    cluster: FlareCluster)
+    cluster: FlareCluster,
+    redisConf: RedisFlarePoolBackendConfiguration)
   extends ThreadSafeRpcEndpoint with ExecutorBackend with FlareClusterListener with Logging {
 
   case object AttemptLaunchReservation
@@ -46,7 +47,8 @@ private[spark] class FlareExecutorBackend(
 
   private val driverEndpoints = new mutable.HashMap[FlareReservationId, RpcEndpointRef]
 
-  private val rootPool = FlareReservationPool.createRootPool(cluster)
+  private val poolStatsProvider = new RedisFlarePoolBackend(redisConf, executorId)
+  private val rootPool = FlarePool.createRootPool(poolStatsProvider)
 
   private val taskToReservationId = new HashMap[Long, FlareReservationId]
   private val reservationTasks = new HashMap[FlareReservationId, Set[Long]] with MultiMap[FlareReservationId, Long]
@@ -57,7 +59,7 @@ private[spark] class FlareExecutorBackend(
   private val attemptLaunchScheduler = ThreadUtils.newDaemonSingleThreadScheduledExecutor("flare-executor-attempt-launch-scheduler")
 
   private def handleReservation(reservation: FlareReservation) = {
-    logDebug(s"Received new reservation: $reservation")
+    logDebug(s"Received reservation: $reservation")
 
     driverEndpoints(reservation.reservationId) = reservation.driverEndpoint
     rootPool.addReservation(reservation.reservationId, reservation.count, reservation.groups)
@@ -94,7 +96,7 @@ private[spark] class FlareExecutorBackend(
             attemptLaunchReservation()
             attemptLaunchScheduled.set(false)
           }
-        }, 100, TimeUnit.MILLISECONDS)
+        }, 1000, TimeUnit.MILLISECONDS)
       attemptLaunchScheduled.set(true)
     }
   }
@@ -147,14 +149,13 @@ private[spark] class FlareExecutorBackend(
     }
   }
 
-  override def onDriverExited(data: DriverData): Unit = {
-    if (cluster.drivers.isEmpty) {
-      logInfo("All drivers have exited, shutting down")
-      executor.stop()
-      stop()
-      rpcEnv.shutdown()
-      proxyRpcEnv.shutdown()
-    }
+  def shutdown(): Unit = {
+    logInfo("Shutting down")
+    executor.stop()
+    stop()
+    rpcEnv.shutdown()
+    proxyRpcEnv.shutdown()
+    cluster.close()
   }
 
   override def onDisconnected(remoteAddress: RpcAddress): Unit = {
@@ -224,10 +225,11 @@ private[spark] object FlareExecutorBackend extends Logging {
   private def run(
     executorId: String,
     cores: Int,
-    clusterConf: FlareClusterConfiguration) {
+    clusterConf: FlareClusterConfiguration,
+    redisConf: RedisFlarePoolBackendConfiguration) {
     
     SignalLogger.register(log)
-    
+
     SparkHadoopUtil.get.runAsSparkUser { () =>
       cluster = FlareCluster(clusterConf)
       cluster.start(ExecutorClusterProfile(executorId, clusterConf.hostname))
@@ -259,8 +261,15 @@ private[spark] object FlareExecutorBackend extends Logging {
       val driverRef = env.rpcEnv.setupEndpointRef("sparkDriver", proxyRpcEnv.address, FlareSchedulerBackend.ENDPOINT_NAME)
 
       val userClassPath = List.empty[URL]
-      
-      env.rpcEnv.setupEndpoint(ENDPOINT_NAME, new FlareExecutorBackend(executorId, proxyRpcEnv.address.host, cores, userClassPath, env, driverRef, proxyRpcEnv, cluster))
+
+      val backend = new FlareExecutorBackend(executorId, proxyRpcEnv.address.host, cores, userClassPath, env, driverRef, proxyRpcEnv, cluster, redisConf)
+
+      env.rpcEnv.setupEndpoint(ENDPOINT_NAME, backend)
+
+      ShutdownHookManager.addShutdownHook { () =>
+        log.debug("Got Shutdown hook")
+        backend.shutdown()
+      }
 
       env.rpcEnv.awaitTermination()
       proxyRpcEnv.awaitTermination()
@@ -272,6 +281,7 @@ private[spark] object FlareExecutorBackend extends Logging {
     var clusterUrl: String = null
     var hostname: String = FlareClusterConfiguration.DEFAULT_HOSTNAME
     var cores: Int = 1
+    var redisHost: String = "localhost"
 
     var argv = args.toList
     while (!argv.isEmpty) {
@@ -284,6 +294,9 @@ private[spark] object FlareExecutorBackend extends Logging {
           argv = tail
         case ("--cores" | "-c") :: value :: tail =>
           cores = value.toInt
+          argv = tail
+        case ("--redis-host") :: value :: tail =>
+          redisHost = value
           argv = tail
         case value :: tail =>
           clusterUrl = value
@@ -298,14 +311,12 @@ private[spark] object FlareExecutorBackend extends Logging {
     }
 
     val clusterConf = FlareClusterConfiguration.fromUrl(clusterUrl, hostname)
+    val redisConf = RedisFlarePoolBackendConfiguration(redisHost)
 
     try {
-      run(executorId, cores, clusterConf)
+      run(executorId, cores, clusterConf, redisConf)
     } finally {
-      if (cluster != null) {
-        logInfo("Leaving cluster")
-        cluster.close()
-      }
+
     }
   }
   
