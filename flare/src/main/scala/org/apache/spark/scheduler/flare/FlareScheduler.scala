@@ -102,23 +102,18 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   
   def handleFailedTask(
       reservationManager: FlareReservationManager,
-      tid: Long,
+      taskId: Long,
       taskState: TaskState,
       reason: TaskEndReason): Unit = synchronized {
-    // get new reservations to place from reservation manager
-    reservationManager.handleFailedTask(tid, taskState, reason)
-  }
-
-  private def getGroupDescription(properties: Properties, index: Int): Option[FlareReservationGroupDescription] = {
-    val prefix = s"spark.flare.pool[$index]"
-    Option(properties.getProperty(s"$prefix.name")).map { name =>
-      val maxShare = Option(properties.getProperty(s"$prefix.maxShare")).map(_.toInt)
-      val minShare = Option(properties.getProperty(s"$prefix.minShare")).map(_.toInt)
-      val weight = Option(properties.getProperty(s"$prefix.weight")).map(_.toInt)
-      FlareReservationGroupDescription(name, minShare, maxShare, weight)
+    val replacementReservations = reservationManager.handleFailedTask(taskId, taskState, reason)
+    if (!replacementReservations.isEmpty) {
+      logDebug(s"Adding additional reservation to executors: ${replacementReservations.mkString(",")} for failed task $taskId")
+      val taskSet = reservationManager.taskSet
+      val reservationGroups = reservationManager.reservationGroups
+      backend.placeReservations(taskSet.stageId, taskSet.stageAttemptId, replacementReservations, reservationGroups)
     }
   }
-   
+
   override def submitTasks(taskSet: TaskSet): Unit = {
     val tasks = taskSet.tasks
     logInfo("Adding task set " + taskSet.id + " with " + tasks.length + " tasks")
@@ -130,23 +125,9 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
       stageManagers(taskSet.stageAttemptId) = manager
       
       val reservations = manager.getReservations
+      val groups = manager.reservationGroups
 
-      val reservationGroups = {
-        var groups = Seq.empty[FlareReservationGroupDescription]
-
-        var groupIndex = 0
-        var nextGroup = getGroupDescription(taskSet.properties, groupIndex)
-
-        while (nextGroup.isDefined) {
-          groups = groups :+ nextGroup.get
-          groupIndex += 1
-          nextGroup = getGroupDescription(taskSet.properties, groupIndex)
-        }
-
-        groups
-      }
-
-      backend.placeReservations(taskSet.stageId, taskSet.stageAttemptId, reservations, reservationGroups)
+      backend.placeReservations(taskSet.stageId, taskSet.stageAttemptId, reservations, groups)
     }
   }
   
@@ -223,8 +204,11 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   }
 
   def taskSetFinished(reservationManager: FlareReservationManager) = synchronized {
-    val taskSet = reservationManager.taskSet
     val executors = reservationManager.pendingReservations.keySet.toSeq
+    val taskSet = reservationManager.taskSet
+
+    logDebug(s"Finishing TaskSet: ${taskSet.id}, pending executors: ${executors.mkString(",")}")
+
     backend.cancelReservations(taskSet.stageId, taskSet.stageAttemptId, executors)
     managersByStageIdAndAttempt.get(taskSet.stageId).flatMap(_.remove(taskSet.stageAttemptId))
   }

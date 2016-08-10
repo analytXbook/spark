@@ -13,7 +13,7 @@ import org.apache.spark.metrics.MetricsSystem
 import org.apache.spark.util.{ShutdownHookManager, SignalLogger}
 
 private[spark] class FlareNode(
-    args: FlareNodeArguments,
+    val args: FlareNodeArguments,
     workDirPath: Option[String])
   extends FlareClusterListener with Logging {
   private val testing: Boolean = sys.props.contains("spark.testing")
@@ -37,8 +37,10 @@ private[spark] class FlareNode(
 
   val nodeId = UUID.randomUUID().toString
 
+  var terminationExpected = false
+
   private val metricsSystem = MetricsSystem.createMetricsSystem("flare-node", clusterConf.sparkConf, securityManager)
-  private val workerSource = new FlareNodeSource(this)
+  private val nodeSource = new FlareNodeSource(this)
 
   private def createWorkDir() {
     workDir = workDirPath.map(new File(_)).getOrElse(new File(sparkHome, "work"))
@@ -65,13 +67,13 @@ private[spark] class FlareNode(
   override def onDriverExited(data: DriverData): Unit = {
     if (cluster.drivers.isEmpty) {
       logInfo("All drivers have exited, resetting cluster")
-      //terminateExecutors()
+      terminateExecutors()
       cluster.reset()
       launchExecutors()
     }
   }
 
-  private def nextExecutorId(): Int = executorIdCounter.incrementAtomic().toInt
+  private def nextExecutorId(): Int = executorIdCounter.increment().toInt
 
   private def executorConf(): SparkConf = {
     val conf = new SparkConf(false)
@@ -82,11 +84,12 @@ private[spark] class FlareNode(
   }
 
   private[spark] def launchExecutors() = {
-    logInfo(s"Configuration: ${cluster.properties}")
+    logInfo(s"App Configuration: ${cluster.properties}")
     val conf = executorConf()
 
-    val executorCount = conf.getInt("spark.flare.executorsPerNode", 1)
+    val executorCount = args.executorCount
 
+    terminationExpected = false
     logInfo(s"Launching $executorCount executors")
     for (i <- 0 until executorCount) {
       val executorId = nextExecutorId.toString
@@ -105,8 +108,8 @@ private[spark] class FlareNode(
       log.warn("Failed to create directory " + executorDir)
     }
 
-    val memory = conf.getSizeAsMb("spark.executor.memory", "1g")
-    val cores = conf.getInt("spark.executor.cores", 1)
+    val memory = args.executorMemoryAsMb
+    val cores = args.executorCores
 
     val executor = new FlareExecutorRunner(clusterConf, executorId, cores, memory, sparkHome, executorDir, conf, securityManager, this)
     executor.start()
@@ -114,6 +117,7 @@ private[spark] class FlareNode(
   }
 
   private[spark] def terminateExecutors() = {
+    terminationExpected = true
     for (executor <- executors.values) {
       logInfo(s"Terminating executor ${executor.executorId}")
       executor.kill()
@@ -129,7 +133,7 @@ private[spark] class FlareNode(
         exitStatus.map(" exitStatus " + _).getOrElse(""))
       executors.remove(executorId)
 
-      if (state == FAILED || state == LOST) {
+      if (!terminationExpected) {
         val replacementId = nextExecutorId.toString
         logInfo(s"Launching new executor $replacementId to replace failed executor $executorId")
         launchExecutor(replacementId, executorConf())
@@ -141,7 +145,7 @@ private[spark] class FlareNode(
     logInfo("Starting Flare Node")
     logInfo(s"Running Spark version ${org.apache.spark.SPARK_VERSION}")
 
-    metricsSystem.registerSource(workerSource)
+    metricsSystem.registerSource(nodeSource)
     metricsSystem.start()
 
     createWorkDir()
@@ -149,7 +153,8 @@ private[spark] class FlareNode(
     launchExecutors()
   }
 
-  def close() = {
+  def shutdown() = {
+    terminateExecutors()
     cluster.close()
   }
 }
@@ -167,6 +172,7 @@ object FlareNode extends Logging {
     val exitLatch = new CountDownLatch(1)
 
     ShutdownHookManager.addShutdownHook { () =>
+      node.shutdown()
       exitLatch.countDown()
     }
 

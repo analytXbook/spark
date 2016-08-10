@@ -7,130 +7,142 @@ import org.apache.spark.flare.FlareCluster
 import org.apache.spark.scheduler.flare._
 
 
-private[spark] sealed trait FlareReservationPool {
+private[spark] sealed trait FlarePool {
   def name: String
+  def parentName: String
+
+  def fullName:String = s"$parentName.$name"
 
   def maxShare: Option[Int]
   def minShare: Option[Int]
   def weight: Option[Int]
 
-  def runningTasks: Int
-  
+  def hasChildren: Boolean
+
   def addReservation(reservationId: FlareReservationId, count: Int, groups: Seq[FlareReservationGroupDescription]): Unit
-  
+
   def removeReservation(reservationId: FlareReservationId): Unit
-    
+
   def addRunningTask(reservationId: FlareReservationId): Unit
-  
+
   def removeRunningTask(reservationId: FlareReservationId): Unit
-  
+
   def nextReservation: Option[FlareReservationId]
 }
 
-private[spark] class FlareReservationPoolGroup(
+private[spark] class FlareRootPool(stats: FlarePoolBackend) extends FlarePoolGroup("root", "", None, None, None)(stats) {
+  override def fullName: String = "root"
+}
+
+private[spark] class FlarePoolGroup(
     val name: String,
+    val parentName: String,
     val minShare: Option[Int],
     val maxShare: Option[Int],
     val weight: Option[Int])(
-    implicit val cluster: FlareCluster)
-  extends FlareReservationPool with Logging {
-  val children = new HashSet[FlareReservationPool]
-  val reservationToChild = new HashMap[FlareReservationId, FlareReservationPool]
-  val groupToChild = new HashMap[String, FlareReservationPool]
+    implicit val stats: FlarePoolBackend)
+  extends FlarePool with Logging {
+  val reservationPools = new HashMap[FlareReservationId, FlarePool]
+  val children = new HashMap[String, FlarePool]
 
-  val runningTaskCounter = cluster.counter(s"PoolRunningTasks:$name")
-
-  def runningTasks = runningTaskCounter.get().toInt
+  def hasChildren: Boolean = !children.isEmpty
 
   def addReservation(reservationId: FlareReservationId, count: Int, groups: Seq[FlareReservationGroupDescription]) = {
-    if (groups.isEmpty) {
-      val pool = new FlareStageReservationPool(reservationId, count, this)
-      reservationToChild(reservationId) = pool
-      children.add(pool)
-    } else {
-      val childGroup = groups.head
-      val pool = groupToChild.getOrElseUpdate(childGroup.name, {
-        val group = new FlareReservationPoolGroup(s"$name.${childGroup.name}", childGroup.minShare, childGroup.maxShare, childGroup.weight)
-        children.add(group)
-        group
-      })
-      reservationToChild(reservationId) = pool
-      pool.addReservation(reservationId, count, groups.tail)
+    reservationPools.get(reservationId) match {
+      case Some(childGroup) => childGroup.addReservation(reservationId, count, groups)
+      case None => {
+        if (groups.isEmpty) {
+          val stagePool = new FlareStagePool(reservationId, fullName, count)
+          children(stagePool.name) = stagePool
+          stats.watch(fullName, stagePool.name)
+          reservationPools(reservationId) = stagePool
+        } else {
+          val childGroup = groups.head
+          val pool = children.getOrElseUpdate(childGroup.name, {
+            val groupPool = new FlarePoolGroup(childGroup.name, fullName, childGroup.minShare, childGroup.maxShare, childGroup.weight)
+            stats.watch(fullName, childGroup.name)
+            groupPool
+          })
+
+          reservationPools(reservationId) = pool
+          pool.addReservation(reservationId, count, groups.tail)
+        }
+      }
     }
   }
 
   def removeReservation(reservationId: FlareReservationId) = {
-    reservationToChild(reservationId) match {
-      case poolGroup: FlareReservationPoolGroup => {
-        reservationToChild -= reservationId
-        poolGroup.removeReservation(reservationId)
-      }
-      case stagePool: FlareStageReservationPool => {
-        reservationToChild -= reservationId
+    reservationPools.remove(reservationId).foreach { pool =>
+      pool.removeReservation(reservationId)
+      if (!pool.hasChildren) {
+        children.remove(pool.name)
+        stats.unwatch(fullName, pool.name)
       }
     }
   }
 
   def addRunningTask(reservationId: FlareReservationId) = {
-    runningTaskCounter.increment()
-    reservationToChild.get(reservationId) match {
+    stats.taskStarted(parentName, name)
+    reservationPools.get(reservationId) match {
       case Some(pool) => pool.addRunningTask(reservationId)
       case None => logError(s"Could not find child pool for $reservationId")
     }
   }
 
   def removeRunningTask(reservationId: FlareReservationId) = {
-    runningTaskCounter.decrement()
-    reservationToChild.get(reservationId) match {
+    stats.taskEnded(parentName, name)
+    reservationPools.get(reservationId) match {
       case Some(pool) => pool.removeRunningTask(reservationId)
       case None => logError(s"Could not find child pool for $reservationId")
     }
   }
 
   def nextReservation: Option[FlareReservationId] = {
-    if (runningTasks < maxShare.getOrElse(Integer.MAX_VALUE)) {
-      //map with runningTasks to lock view of counters during sorting
-      for ((child, runningTasks) <- children.map(pool => (pool, pool.runningTasks)).toSeq.sortWith(FlareReservationPool.FairComparator)) {
+    val childrenRunningTasks = stats.childrenRunningTasks(fullName).withDefaultValue(0)
+
+    for ((child, runningTasks) <- children.values.map(child => (child, childrenRunningTasks(child.name))).toSeq.sortWith(FlarePool.FairComparator)) {
+      if (child.maxShare.fold(true)(runningTasks < _)) {
         val next = child.nextReservation
         if (next.isDefined)
           return next
       }
     }
 
-    return None
+    None
   }
 }
 
-private[spark] class FlareStageReservationPool(
+private[spark] class FlareStagePool(
     reservationId: FlareReservationId,
-    var count: Int,
-    parent: FlareReservationPoolGroup)
-  extends FlareReservationPool{
+    val parentName: String,
+    var count: Int)(
+    implicit val stats: FlarePoolBackend)
+  extends FlarePool{
+
+  def hasChildren = false
 
   def maxShare: Option[Int] = None
   def minShare: Option[Int] = None
   def weight: Option[Int] = None
 
-  lazy val name = s"${parent.name}[${reservationId.driverId}][${reservationId.stageId}][${reservationId.attemptId}]"
-
-  var runningTasks = 0
+  val name = s"driver${reservationId.driverId}_stage${reservationId.stageId}_attempt${reservationId.attemptId}"
 
   def addReservation(reservationId: FlareReservationId, count: Int, groups: Seq[FlareReservationGroupDescription]) = {
     this.count += count
   }
-  
+
   def removeReservation(reservationId: FlareReservationId) = {
     this.count = 0
   }
-  
+
   def addRunningTask(reservationId: FlareReservationId) = {
-    runningTasks += 1
+    stats.taskStarted(parentName, name)
   }
-  
+
   def removeRunningTask(reservationId: FlareReservationId) = {
-    runningTasks -= 1
+    stats.taskEnded(parentName, name)
   }
-  
+
   def nextReservation: Option[FlareReservationId] = {
     if (count > 0) {
       count -= 1
@@ -139,12 +151,12 @@ private[spark] class FlareStageReservationPool(
   }
 }
 
-private[spark] object FlareReservationPool extends Logging{
-  def createRootPool(implicit cluster: FlareCluster): FlareReservationPool = new FlareReservationPoolGroup("root", None, None, None)
+private[spark] object FlarePool extends Logging{
+  def createRootPool(stats: FlarePoolBackend): FlarePool = new FlareRootPool(stats)
 
   def FairComparator(
-    pool1: (FlareReservationPool, Int),
-    pool2: (FlareReservationPool, Int)): Boolean = {
+    pool1: (FlarePool, Int),
+    pool2: (FlarePool, Int)): Boolean = {
     val p1 = pool1._1
     val p2 = pool2._1
 

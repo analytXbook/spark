@@ -66,6 +66,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
     stageId: Int,
     stageAttemptId: Int,
     executorIds: Seq[String]) = {
+    logDebug(s"Cancelling reservations on executors: ${executorIds.mkString(",")}")
     executorIds.foreach {
       executorId => {
         val executor = executors(executorId)
@@ -112,7 +113,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
 
           scheduler.executorRegistered(executorId, executorAddress.host)
 
-          logInfo(s"Registered executor $executorRef ($executorAddress) with ID $executorId")
+          logInfo(s"Registered executor $executorId ($executorAddress)")
 
           context.reply(RegisteredExecutor)
 
@@ -172,7 +173,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
     cluster.addListener(this)
 
     val driverIdCounter = cluster.counter("driverId")
-    driverId = driverIdCounter.incrementAtomic().toInt
+    driverId = driverIdCounter.increment().toInt
     cluster.register(DriverData(driverId, rpcEnv.address.host, rpcEnv.address.port))
 
     driverEndpoint = rpcEnv.setupEndpoint(FlareSchedulerBackend.ENDPOINT_NAME, createDriverEndpoint())

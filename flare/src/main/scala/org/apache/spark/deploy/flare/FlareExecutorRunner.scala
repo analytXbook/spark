@@ -41,6 +41,7 @@ private[spark] class FlareExecutorRunner(
       "--executor-id", executorId,
       "--hostname", clusterConf.hostname,
       "--cores", cores.toString,
+      "--redis-host", node.args.redisHost,
       clusterConf.clusterUrl)
     
     val extraJavaOpts = conf.getOption("spark.executor.extraJavaOptions")
@@ -76,27 +77,28 @@ private[spark] class FlareExecutorRunner(
       if (state == ExecutorState.RUNNING) {
         state = ExecutorState.FAILED
       }
-      killProcess(Some("Flare executor shutting down"))
+      killProcess(Some("Flare node shutting down"))
     }
   }
 
   private def killProcess(message: Option[String]) = {
     if (process != null) {
-      logInfo("Killing process!")
+      logInfo(s"Killing process for executor $executorId ")
       if (stdoutAppender != null) {
         stdoutAppender.stop()
       }
       if (stderrAppender != null) {
         stderrAppender.stop()
       }
-      val exited = Utils.waitForProcess(process, EXECUTOR_TERMINATE_TIMEOUT_MS)
-      if (exited) {
-        logWarning("Failed to terminate process " + process +
-          "gracefully. Destroying forcibly, this process may become orphaned.")
-        process.destroyForcibly()
-      }
 
-      val exitCode = if (exited) Some(process.exitValue()) else None
+      process.destroy()
+
+      val exitCode = if (Utils.waitForProcess(process, EXECUTOR_TERMINATE_TIMEOUT_MS)) {
+        Some(process.exitValue())
+      } else {
+        logWarning(s"Failed to terminate process executor $executorId gracefully. This process may become orphaned.")
+        None
+      }
 
       node.onExecutorStateChanged(executorId, state, message, exitCode)
     }
@@ -115,9 +117,9 @@ private[spark] class FlareExecutorRunner(
       }
     }
   }
-  
-  def substituteVariables(argument: String): String = argument 
-  
+
+  def substituteVariables(argument: String): String = argument
+
   private def fetchAndRunExecutor() = {
     try {
       val builder = CommandUtils.buildProcessBuilder(getCommand(), securityManager, memory.toInt, sparkHome.getAbsolutePath, substituteVariables)
@@ -142,7 +144,7 @@ private[spark] class FlareExecutorRunner(
       stderrAppender = FileAppender(process.getErrorStream, stderr, conf)
       
       val exitCode = process.waitFor()
-      
+
       state = ExecutorState.EXITED
       val message = "Command exited with code " + exitCode
 
