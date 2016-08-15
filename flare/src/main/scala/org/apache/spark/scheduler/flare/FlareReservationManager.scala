@@ -220,7 +220,7 @@ private[spark] class FlareReservationManager(
   }
 
   def maybeFinishTaskSet() = {
-    if (isZombie && runningTasks == 0) {
+    if (isZombie && runningTasks.isEmpty) {
       scheduler.taskSetFinished(this)
     }
   }
