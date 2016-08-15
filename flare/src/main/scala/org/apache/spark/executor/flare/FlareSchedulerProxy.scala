@@ -23,6 +23,10 @@ private[spark] class FlareSchedulerProxy(
     case reservation: FlareReservation => {
       executorRef.send(reservation)
     }
+
+    case _cancelReservation @ CancelReservation(reservationId) => {
+      executorRef.send(_cancelReservation)
+    }
   }
 
   private def registerWithDriver(driverId: Int, driverRef: RpcEndpointRef) = {
