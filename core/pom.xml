@@ -21,7 +21,7 @@
   <parent>
     <groupId>org.apache.spark</groupId>
     <artifactId>spark-parent_2.10</artifactId>
-    <version>1.6.1+flare.9</version>
+    <version>1.6.1+flare.10-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
