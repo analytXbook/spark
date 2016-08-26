@@ -35,7 +35,7 @@ private[spark] class FlareExecutorBackend(
   extends ThreadSafeRpcEndpoint with ExecutorBackend with FlareClusterListener with Logging {
 
   case object AttemptLaunchReservation
-  case class RemoveRunningTask(reservationId: FlareReservationId)
+  case class RedemptionRejected(reservationId: FlareReservationId)
   case class CleanUpFinishedTask(taskId: Long)
   
   logInfo("Starting Flare Executor Backend")
@@ -47,8 +47,8 @@ private[spark] class FlareExecutorBackend(
 
   private val driverEndpoints = new mutable.HashMap[FlareReservationId, RpcEndpointRef]
 
-  private val poolStatsProvider = new RedisFlarePoolBackend(redisConf, executorId)
-  private val rootPool = FlarePool.createRootPool(poolStatsProvider)
+  private val poolBackend = new RedisLuaFlarePoolBackend(redisConf, executorId)
+  poolBackend.initialize()
 
   private val taskToReservationId = new HashMap[Long, FlareReservationId]
   private val reservationTasks = new HashMap[FlareReservationId, Set[Long]] with MultiMap[FlareReservationId, Long]
@@ -62,7 +62,7 @@ private[spark] class FlareExecutorBackend(
     logDebug(s"Received reservation: $reservation")
 
     driverEndpoints(reservation.reservationId) = reservation.driverEndpoint
-    rootPool.addReservation(reservation.reservationId, reservation.count, reservation.groups)
+    poolBackend.addReservation(reservation.reservationId, reservation.count, reservation.groups)
     
     attemptLaunchReservation()
   }
@@ -72,7 +72,7 @@ private[spark] class FlareExecutorBackend(
 
     reservationTasks.get(reservationId).foreach(_.foreach(killTask(_, false)))
 
-    rootPool.removeReservation(reservationId)
+    poolBackend.removeReservation(reservationId)
 
     attemptLaunchReservation()
   }
@@ -82,7 +82,7 @@ private[spark] class FlareExecutorBackend(
 
     taskToReservationId.remove(taskId).map {
       reservationId => {
-        rootPool.removeRunningTask(reservationId)
+        poolBackend.taskFinished(reservationId)
         reservationTasks.removeBinding(reservationId, taskId)
       }
     }
@@ -105,19 +105,19 @@ private[spark] class FlareExecutorBackend(
     self.send(AttemptLaunchReservation)
   }
 
-  private def removeRunningTask(reservationId: FlareReservationId) = {
-    self.send(RemoveRunningTask(reservationId))
+  private def redemptionRejected(reservationId: FlareReservationId) = {
+    self.send(RedemptionRejected(reservationId))
   }
 
   private def launchReservation(reservationId: FlareReservationId): Unit = {
     activeTasks.incrementAndGet()
-    rootPool.addRunningTask(reservationId)
+    poolBackend.taskLaunched(reservationId)
 
     val driverEndpoint = driverEndpoints(reservationId)
     driverEndpoint.ask[RedeemReservationResponse](RedeemReservation(reservationId, executorId, hostname)) onComplete {
       case Success(response) => response match {
         case SkipReservationResponse =>
-          removeRunningTask(reservationId)
+          redemptionRejected(reservationId)
           attemptLaunchReservation()
         case LaunchTaskReservationResponse(taskData) => 
           val taskDesc = ser.deserialize[TaskDescription](taskData.value)
@@ -127,7 +127,7 @@ private[spark] class FlareExecutorBackend(
         case _ =>
       }
       case Failure(failure) =>
-        removeRunningTask(reservationId)
+        redemptionRejected(reservationId)
         attemptLaunchReservation()
     }
   }
@@ -179,7 +179,7 @@ private[spark] class FlareExecutorBackend(
     case AttemptLaunchReservation => {
       if (activeTasks.get < cores) {
         val startTime = System.currentTimeMillis()
-        val nextReservation = rootPool.nextReservation
+        val nextReservation = poolBackend.nextReservation
         val duration = System.currentTimeMillis() - startTime
         logDebug(s"nextReservation took $duration ms, has result: ${nextReservation.isDefined}")
 
@@ -194,15 +194,15 @@ private[spark] class FlareExecutorBackend(
         }
       }
     }
-    case RemoveRunningTask(reservationId) => {
+    case RedemptionRejected(reservationId) => {
       activeTasks.decrementAndGet()
-      rootPool.removeRunningTask(reservationId)
+      poolBackend.taskRejected(reservationId)
     }
     case CleanUpFinishedTask(taskId) => {
       taskToReservationId.get(taskId) match {
         case Some(reservationId) => {
           activeTasks.decrementAndGet()
-          rootPool.removeRunningTask(reservationId)
+          poolBackend.taskFinished(reservationId)
           reservationTasks.removeBinding(reservationId, taskId)
           taskToReservationId.remove(taskId)
         }
