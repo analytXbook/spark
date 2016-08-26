@@ -49,7 +49,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
     stageId: Int,
     stageAttemptId: Int,
     executorReservationCount: Map[String, Int],
-    reservationGroups: Seq[FlareReservationGroupDescription]) = {
+    reservationGroups: Seq[FlarePoolDescription]) = {
     executorReservationCount.foreach {
       case (executorId, reservationCount) =>
         val executor = executors(executorId)

@@ -1,55 +1,99 @@
 package org.apache.spark.executor.flare
 
+import org.apache.spark.Logging
+import org.apache.spark.scheduler.flare.{FlarePoolDescription, FlareReservationId}
+import org.json4s._
+import org.json4s.JsonDSL._
+import org.json4s.jackson.JsonMethods._
+
 import redis.clients.jedis.{Jedis, ZParams}
 
 import scala.collection.JavaConversions._
+import scala.io.Source
+
 trait FlarePoolBackend {
-  def watch(parentPool: String, pool: String): Unit
-  def unwatch(parentPool: String, pool: String): Unit
-  def taskStarted(parentPool: String, pool: String): Unit
-  def taskEnded(parentPool: String, pool: String): Unit
-  def childrenRunningTasks(pool: String): Map[String, Int]
+  def initialize(): Unit
+  def addReservation(reservationId: FlareReservationId, count: Int, groups: Seq[FlarePoolDescription]): Unit
+  def removeReservation(reservationId: FlareReservationId): Unit
+  def taskLaunched(reservationId: FlareReservationId): Unit
+  def taskRejected(reservationId: FlareReservationId): Unit
+  def taskFinished(reservationId: FlareReservationId): Unit
+  def nextReservation(): Option[FlareReservationId]
 }
 
 case class RedisFlarePoolBackendConfiguration(host: String)
 
-class RedisFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executorId: String) extends FlarePoolBackend {
-  private val jedis = new Jedis(conf.host)
+class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executorId: String) extends FlarePoolBackend with Logging {
+  private val redis = new Jedis(conf.host)
 
-  private def executorPoolKey(pool: String) = s"flare_pool:executor_$executorId:$pool"
-  private def globalPoolKey(pool: String) = s"flare_pool:global:$pool"
+  private var addReservationSHA, removeReservationSHA, nextReservationSHA, taskLaunchedSHA, taskRejectedSHA, taskFinishedSHA: String = _
 
-  override def watch(parentPool: String, pool: String): Unit = {
-    jedis.sadd(executorPoolKey(parentPool), pool)
+  private def loadScript(name: String): String = {
+    val source = Source.fromInputStream(getClass.getResourceAsStream(s"/flare/redis/$name.lua"))
+    val script = source.mkString
+    redis.scriptLoad(script)
   }
 
-  override def unwatch(parentPool: String, pool: String): Unit = {
-    jedis.srem(executorPoolKey(parentPool), pool)
+  override def initialize(): Unit = {
+    addReservationSHA = loadScript("add_reservation")
+    removeReservationSHA = loadScript("remove_reservation")
+    nextReservationSHA = loadScript("next_reservation")
+    taskLaunchedSHA = loadScript("task_launched")
+    taskRejectedSHA = loadScript("task_rejected")
+    taskFinishedSHA = loadScript("task_finished")
   }
 
-  override def taskStarted(parentPool: String, pool: String): Unit = {
-    jedis.zincrby(globalPoolKey(parentPool), 1, pool)
+  implicit def writePoolDescription(pool: FlarePoolDescription): JValue = {
+    ("max_share" -> pool.maxShare) ~
+    ("min_share" -> pool.minShare) ~
+    ("weight" -> pool.weight)
   }
 
-  override def taskEnded(parentPool: String, pool: String): Unit = {
-    jedis.zincrby(globalPoolKey(parentPool), -1, pool)
+  override def addReservation(reservationId: FlareReservationId, count: Int, groups: Seq[FlarePoolDescription]): Unit = {
+    redis.evalsha(addReservationSHA, 0,
+      executorId,
+      reservationId.stageId.toString,
+      reservationId.attemptId.toString,
+      reservationId.driverId.toString,
+      count.toString,
+      compact(render(groups)))
   }
 
-  override def childrenRunningTasks(pool: String): Map[String, Int] = {
-    val transaction = jedis.multi()
+  override def nextReservation(): Option[FlareReservationId] = {
+    Option(redis.evalsha(nextReservationSHA, 0, executorId))
+      .map(_.asInstanceOf[java.util.List[String]].toList)
+      .map(result => FlareReservationId(result(0).toInt, result(1).toInt, result(2).toInt))
+  }
 
-    val params = new ZParams
-    new ZParams().weightsByDouble(1, 0)
+  override def taskRejected(reservationId: FlareReservationId): Unit = {
+    redis.evalsha(taskRejectedSHA, 0,
+      executorId,
+      reservationId.stageId.toString,
+      reservationId.attemptId.toString,
+      reservationId.driverId.toString)
+  }
 
-    val outKey = "flare_pool_running_tasks_out"
-    transaction.zinterstore(outKey, params, globalPoolKey(pool), executorPoolKey(pool))
-    val result = transaction.zrangeWithScores(outKey, 0, -1)
+  override def removeReservation(reservationId: FlareReservationId): Unit = {
+    redis.evalsha(removeReservationSHA, 0,
+      executorId,
+      reservationId.stageId.toString,
+      reservationId.attemptId.toString,
+      reservationId.driverId.toString)
+  }
 
-    transaction.exec()
+  override def taskLaunched(reservationId: FlareReservationId): Unit = {
+    redis.evalsha(taskLaunchedSHA, 0,
+      executorId,
+      reservationId.stageId.toString,
+      reservationId.attemptId.toString,
+      reservationId.driverId.toString)
+  }
 
-    result.get.foldLeft(Map.empty[String, Int]){
-      case (acc, tuple) => acc + (tuple.getElement -> tuple.getScore.toInt)
-    }
+  override def taskFinished(reservationId: FlareReservationId): Unit = {
+    redis.evalsha(taskFinishedSHA, 0,
+      executorId,
+      reservationId.stageId.toString,
+      reservationId.attemptId.toString,
+      reservationId.driverId.toString)
   }
 }
-

@@ -145,7 +145,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
         taskOpt
       }
       case None => {
-        logError(s"Could not find reservation manager for $stageId, $stageAttemptId")
+        logDebug(s"Could not find reservation manager for $stageId, $stageAttemptId")
         None
       }
     }

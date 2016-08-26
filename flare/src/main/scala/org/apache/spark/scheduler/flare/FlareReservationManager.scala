@@ -72,17 +72,17 @@ private[spark] class FlareReservationManager(
 
 
   val reservationGroups = {
-    def getGroupDescription(properties: Properties, index: Int): Option[FlareReservationGroupDescription] = {
+    def getGroupDescription(properties: Properties, index: Int): Option[FlarePoolDescription] = {
       val prefix = s"spark.flare.pool[$index]"
       Option(properties.getProperty(s"$prefix.name")).map { name =>
         val maxShare = Option(properties.getProperty(s"$prefix.maxShare")).map(_.toInt)
         val minShare = Option(properties.getProperty(s"$prefix.minShare")).map(_.toInt)
         val weight = Option(properties.getProperty(s"$prefix.weight")).map(_.toInt)
-        FlareReservationGroupDescription(name, minShare, maxShare, weight)
+        FlarePoolDescription(name, minShare, maxShare, weight)
       }
     }
 
-    var groups = Seq.empty[FlareReservationGroupDescription]
+    var groups = Seq.empty[FlarePoolDescription]
 
     var groupIndex = 0
     var nextGroup = getGroupDescription(taskSet.properties, groupIndex)
