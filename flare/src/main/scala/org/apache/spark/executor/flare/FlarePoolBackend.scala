@@ -44,6 +44,7 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executo
   }
 
   implicit def writePoolDescription(pool: FlarePoolDescription): JValue = {
+  	("name" -> pool.name) ~
     ("max_share" -> pool.maxShare) ~
     ("min_share" -> pool.minShare) ~
     ("weight" -> pool.weight)
