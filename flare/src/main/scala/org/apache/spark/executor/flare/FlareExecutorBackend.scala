@@ -79,13 +79,6 @@ private[spark] class FlareExecutorBackend(
 
   private def killTask(taskId: Long, interrupt: Boolean) = {
     executor.killTask(taskId, interrupt)
-
-    taskToReservationId.remove(taskId).map {
-      reservationId => {
-        poolBackend.taskFinished(reservationId)
-        reservationTasks.removeBinding(reservationId, taskId)
-      }
-    }
   }
 
   private def scheduleAttemptLaunchReservation(): Unit = {
