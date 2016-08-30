@@ -50,6 +50,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
     stageAttemptId: Int,
     executorReservationCount: Map[String, Int],
     reservationGroups: Seq[FlarePoolDescription]) = {
+    logDebug(s"Placing Reservations for stage ($stageId, $stageAttemptId): $executorReservationCount")
     executorReservationCount.foreach {
       case (executorId, reservationCount) =>
         val executor = executors(executorId)
@@ -66,7 +67,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
     stageId: Int,
     stageAttemptId: Int,
     executorIds: Seq[String]) = {
-    logDebug(s"Cancelling reservations on executors: ${executorIds.mkString(",")}")
+    logDebug(s"Cancelling open reservations for stage ($stageId, $stageAttemptId) on executors: ${executorIds.mkString(",")}")
     executorIds.foreach {
       executorId => {
         val executor = executors(executorId)

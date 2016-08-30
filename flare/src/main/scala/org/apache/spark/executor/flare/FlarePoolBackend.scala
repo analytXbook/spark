@@ -5,10 +5,10 @@ import org.apache.spark.scheduler.flare.{FlarePoolDescription, FlareReservationI
 import org.json4s._
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
-
 import redis.clients.jedis.{Jedis, ZParams}
 
 import scala.collection.JavaConversions._
+import scala.collection.mutable
 import scala.io.Source
 
 trait FlarePoolBackend {
@@ -26,21 +26,30 @@ case class RedisFlarePoolBackendConfiguration(host: String)
 class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executorId: String) extends FlarePoolBackend with Logging {
   private val redis = new Jedis(conf.host)
 
-  private var addReservationSHA, removeReservationSHA, nextReservationSHA, taskLaunchedSHA, taskRejectedSHA, taskFinishedSHA: String = _
-
-  private def loadScript(name: String): String = {
-    val source = Source.fromInputStream(getClass.getResourceAsStream(s"/flare/redis/$name.lua"))
+  private def loadScript(scriptName: String): Unit = {
+    val source = Source.fromInputStream(getClass.getResourceAsStream(s"/org/apache/spark/flare/redis/$scriptName.lua"))
     val script = source.mkString
-    redis.scriptLoad(script)
+    scriptSHA(scriptName) = redis.scriptLoad(script)
+  }
+
+  private val scriptSHA = mutable.Map[String, String]()
+
+  private def evalScript(scriptName: String, args: String*): AnyRef = {
+    try {
+      redis.evalsha(scriptSHA(scriptName), 0, args: _*)
+    } catch {
+      case ex: Exception =>
+        throw new RuntimeException(s"Failed to run script '$scriptName', args = (${args.mkString(" ")})", ex)
+    }
   }
 
   override def initialize(): Unit = {
-    addReservationSHA = loadScript("add_reservation")
-    removeReservationSHA = loadScript("remove_reservation")
-    nextReservationSHA = loadScript("next_reservation")
-    taskLaunchedSHA = loadScript("task_launched")
-    taskRejectedSHA = loadScript("task_rejected")
-    taskFinishedSHA = loadScript("task_finished")
+    loadScript("add_reservation")
+    loadScript("remove_reservation")
+    loadScript("next_reservation")
+    loadScript("task_launched")
+    loadScript("task_rejected")
+    loadScript("task_finished")
   }
 
   implicit def writePoolDescription(pool: FlarePoolDescription): JValue = {
@@ -51,7 +60,7 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executo
   }
 
   override def addReservation(reservationId: FlareReservationId, count: Int, groups: Seq[FlarePoolDescription]): Unit = {
-    redis.evalsha(addReservationSHA, 0,
+    evalScript("add_reservation",
       executorId,
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
@@ -60,38 +69,40 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executo
       compact(render(groups)))
   }
 
+  override def removeReservation(reservationId: FlareReservationId): Unit = {
+    evalScript("remove_reservation",
+      executorId,
+      reservationId.stageId.toString,
+      reservationId.attemptId.toString,
+      reservationId.driverId.toString)
+  }
+
   override def nextReservation(): Option[FlareReservationId] = {
-    Option(redis.evalsha(nextReservationSHA, 0, executorId))
-      .map(_.asInstanceOf[java.util.List[String]].toList)
+    Option(evalScript("next_reservation", executorId))
+      .map(_.asInstanceOf[java.util.List[String]])
       .map(result => FlareReservationId(result(0).toInt, result(1).toInt, result(2).toInt))
   }
 
   override def taskRejected(reservationId: FlareReservationId): Unit = {
-    redis.evalsha(taskRejectedSHA, 0,
+    evalScript("task_rejected",
       executorId,
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
       reservationId.driverId.toString)
-  }
 
-  override def removeReservation(reservationId: FlareReservationId): Unit = {
-    redis.evalsha(removeReservationSHA, 0,
-      executorId,
-      reservationId.stageId.toString,
-      reservationId.attemptId.toString,
-      reservationId.driverId.toString)
   }
 
   override def taskLaunched(reservationId: FlareReservationId): Unit = {
-    redis.evalsha(taskLaunchedSHA, 0,
+    evalScript("task_launched",
       executorId,
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
       reservationId.driverId.toString)
+
   }
 
   override def taskFinished(reservationId: FlareReservationId): Unit = {
-    redis.evalsha(taskFinishedSHA, 0,
+    evalScript("task_finished",
       executorId,
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
