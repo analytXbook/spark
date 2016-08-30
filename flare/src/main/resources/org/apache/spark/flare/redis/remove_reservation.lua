@@ -55,7 +55,7 @@ local remove_reservation = function()
 
     local stage_finished = false
 
-    if parent_path ~= nil then
+    if parent_path then
         if hdel_and_is_empty(stage_key..":reservations", executor) then
             local stage_pool_path = parent_path ~= "root" and parent_path.."."..stage_name or stage_name
             redis.call("DEL", "flare:pool:"..stage_pool_path)

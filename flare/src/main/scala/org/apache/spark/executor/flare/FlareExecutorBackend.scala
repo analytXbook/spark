@@ -89,7 +89,7 @@ private[spark] class FlareExecutorBackend(
             attemptLaunchReservation()
             attemptLaunchScheduled.set(false)
           }
-        }, 1000, TimeUnit.MILLISECONDS)
+        }, 300, TimeUnit.MILLISECONDS)
       attemptLaunchScheduled.set(true)
     }
   }
@@ -185,6 +185,8 @@ private[spark] class FlareExecutorBackend(
             scheduleAttemptLaunchReservation()
           }
         }
+      } else {
+        scheduleAttemptLaunchReservation()
       }
     }
     case RedemptionRejected(reservationId) => {
@@ -192,9 +194,9 @@ private[spark] class FlareExecutorBackend(
       poolBackend.taskRejected(reservationId)
     }
     case CleanUpFinishedTask(taskId) => {
+      activeTasks.decrementAndGet()
       taskToReservationId.get(taskId) match {
         case Some(reservationId) => {
-          activeTasks.decrementAndGet()
           poolBackend.taskFinished(reservationId)
           reservationTasks.removeBinding(reservationId, taskId)
           taskToReservationId.remove(taskId)
