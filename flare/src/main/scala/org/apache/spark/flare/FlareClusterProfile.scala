@@ -2,6 +2,7 @@ package org.apache.spark.flare
 
 import org.apache.curator.framework.recipes.barriers.DistributedBarrier
 import org.apache.curator.framework.recipes.leader.{LeaderLatch, LeaderLatchListener}
+import org.apache.spark.executor.flare.FlarePoolBackend
 import org.apache.spark.{Logging, SparkException}
 import org.apache.zookeeper.CreateMode
 import org.apache.spark.util.SerializerUtils._
@@ -12,13 +13,16 @@ sealed trait FlareClusterProfile {
     throw new UnsupportedOperationException("Only nodes can reset the cluster state")
 }
 
-case class NodeClusterProfile(nodeId: String, hostname: String) extends FlareClusterProfile with Logging {
+case class NodeClusterProfile(nodeId: String, hostname: String, poolBackend: FlarePoolBackend) extends FlareClusterProfile with Logging {
   override def start(cluster: FlareCluster): Unit = {
     val zk = cluster.zk
     val initializationBarrier = new DistributedBarrier(zk, "/init/barrier")
     if (cluster.drivers.isEmpty) {
       logInfo("No drivers found")
       initializationBarrier.setBarrier()
+
+      logInfo("Resetting pool backend")
+      poolBackend.reset()
 
       if (cluster.nodes.isEmpty) {
         if (zk.checkExists.forPath("/reset") != null) {
@@ -34,7 +38,7 @@ case class NodeClusterProfile(nodeId: String, hostname: String) extends FlareClu
 
     cluster.register(NodeData(nodeId, hostname))
 
-    logInfo("Waiting for drivers")
+    logInfo("Waiting for drivers to join")
     initializationBarrier.waitOnBarrier()
   }
 
@@ -50,14 +54,12 @@ case class NodeClusterProfile(nodeId: String, hostname: String) extends FlareClu
 
     resetLeader.addListener(new LeaderLatchListener() {
       override def isLeader() = {
-        logInfo("Watching for all executors to exit")
+        logInfo("Waiting for all executors to exit")
 
-        var executors = cluster.executors
-
-        while(!executors.isEmpty) {
-          logInfo(s"Remaining executors: ${executors.map(_.executorId).mkString(",")}")
-          Thread.sleep(1000)
-          executors = cluster.executors
+        while(!cluster.executors.isEmpty) {
+          logInfo(s"Waiting for executors: ${cluster.executors.map(_.executorId).mkString(",")}")
+          Thread.sleep(3000)
+          cluster.refreshMembers()
         }
 
         resetBarrier.removeBarrier()
@@ -73,6 +75,9 @@ case class NodeClusterProfile(nodeId: String, hostname: String) extends FlareClu
     resetBarrier.waitOnBarrier()
 
     resetLeader.close()
+
+    logInfo("Resetting pool backend")
+    poolBackend.reset()
 
     logInfo("Waiting for drivers")
     initializationBarrier.waitOnBarrier()

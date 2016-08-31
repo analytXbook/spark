@@ -3,8 +3,10 @@ package org.apache.spark.deploy.flare
 import java.io.{File, IOException}
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 
 import org.apache.spark.deploy.ExecutorState
+import org.apache.spark.executor.flare.{RedisFlarePoolBackendConfiguration, RedisLuaFlarePoolBackend}
 
 import scala.collection.mutable.HashMap
 import org.apache.spark.{Logging, SecurityManager, SparkConf}
@@ -37,10 +39,13 @@ private[spark] class FlareNode(
 
   val nodeId = UUID.randomUUID().toString
 
-  var terminationExpected = false
+  var terminationExpected = new AtomicBoolean()
 
   private val metricsSystem = MetricsSystem.createMetricsSystem("flare-node", clusterConf.sparkConf, securityManager)
   private val nodeSource = new FlareNodeSource(this)
+
+  private val poolBackendConf = RedisFlarePoolBackendConfiguration(args.redisHost)
+  private val poolBackend = new RedisLuaFlarePoolBackend(poolBackendConf)
 
   private def createWorkDir() {
     workDir = workDirPath.map(new File(_)).getOrElse(new File(sparkHome, "work"))
@@ -60,7 +65,7 @@ private[spark] class FlareNode(
   
   private def joinCluster() = {
     cluster.addListener(this)
-    cluster.start(NodeClusterProfile(nodeId, args.hostname))
+    cluster.start(NodeClusterProfile(nodeId, args.hostname, poolBackend))
     executorIdCounter = cluster.counter("executorId")
   }
 
@@ -89,7 +94,8 @@ private[spark] class FlareNode(
 
     val executorCount = args.executorCount
 
-    terminationExpected = false
+    terminationExpected.set(false)
+
     logInfo(s"Launching $executorCount executors")
     for (i <- 0 until executorCount) {
       val executorId = nextExecutorId.toString
@@ -117,7 +123,7 @@ private[spark] class FlareNode(
   }
 
   private[spark] def terminateExecutors() = {
-    terminationExpected = true
+    terminationExpected.set(true)
     for (executor <- executors.values) {
       logInfo(s"Terminating executor ${executor.executorId}")
       executor.kill()
@@ -133,7 +139,7 @@ private[spark] class FlareNode(
         exitStatus.map(" exitStatus " + _).getOrElse(""))
       executors.remove(executorId)
 
-      if (!terminationExpected) {
+      if (!terminationExpected.get) {
         val replacementId = nextExecutorId.toString
         logInfo(s"Launching new executor $replacementId to replace failed executor $executorId")
         launchExecutor(replacementId, executorConf())

@@ -47,8 +47,8 @@ private[spark] class FlareExecutorBackend(
 
   private val driverEndpoints = new mutable.HashMap[FlareReservationId, RpcEndpointRef]
 
-  private val poolBackend = new RedisLuaFlarePoolBackend(redisConf, executorId)
-  poolBackend.initialize()
+  private val poolBackend = new RedisLuaFlarePoolBackend(redisConf)
+  poolBackend.initialize(executorId)
 
   private val taskToReservationId = new HashMap[Long, FlareReservationId]
   private val reservationTasks = new HashMap[FlareReservationId, Set[Long]] with MultiMap[FlareReservationId, Long]
