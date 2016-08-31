@@ -32,7 +32,6 @@ private[spark] class FlareExecutorRunner(
   
   private val EXECUTOR_TERMINATE_TIMEOUT_MS = 15 * 1000
 
-  private var shutdownHook: AnyRef = _
 
   @volatile var state: ExecutorState.Value = ExecutorState.LAUNCHING
 
@@ -72,13 +71,6 @@ private[spark] class FlareExecutorRunner(
       override def run() { fetchAndRunExecutor() }
     }
     workerThread.start()
-    
-    shutdownHook = ShutdownHookManager.addShutdownHook { () =>
-      if (state == ExecutorState.RUNNING) {
-        state = ExecutorState.FAILED
-      }
-      killProcess(Some("Flare node shutting down"))
-    }
   }
 
   private def killProcess(message: Option[String]) = {
@@ -109,12 +101,6 @@ private[spark] class FlareExecutorRunner(
       workerThread.interrupt()
       workerThread = null
       state = ExecutorState.KILLED
-      
-      try {
-        ShutdownHookManager.removeShutdownHook(shutdownHook)
-      } catch {
-        case e: IllegalStateException => None
-      }
     }
   }
 

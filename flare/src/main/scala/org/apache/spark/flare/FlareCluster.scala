@@ -91,6 +91,12 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
     eventBus.stop()
   }
 
+  def refreshMembers(): Unit = {
+    driverCache.rebuild()
+    nodeCache.rebuild()
+    driverCache.rebuild()
+  }
+
   def reset() = {
     localProfile.getOrElse(throw new SparkException("Attempting to reset cluster that has not be started")).reset(this)
   }

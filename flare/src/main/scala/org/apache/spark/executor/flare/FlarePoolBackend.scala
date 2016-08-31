@@ -12,18 +12,19 @@ import scala.collection.mutable
 import scala.io.Source
 
 trait FlarePoolBackend {
-  def initialize(): Unit
+  def initialize(executorId: String): Unit
   def addReservation(reservationId: FlareReservationId, count: Int, groups: Seq[FlarePoolDescription]): Unit
   def removeReservation(reservationId: FlareReservationId): Unit
   def taskLaunched(reservationId: FlareReservationId): Unit
   def taskRejected(reservationId: FlareReservationId): Unit
   def taskFinished(reservationId: FlareReservationId): Unit
   def nextReservation(): Option[FlareReservationId]
+  def reset(): Unit
 }
 
 case class RedisFlarePoolBackendConfiguration(host: String)
 
-class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executorId: String) extends FlarePoolBackend with Logging {
+class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration) extends FlarePoolBackend with Logging {
   private val redis = new Jedis(conf.host)
 
   private def loadScript(scriptName: String): Unit = {
@@ -43,13 +44,22 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executo
     }
   }
 
-  override def initialize(): Unit = {
+  private var executorId: Option[String] = None
+
+  override def initialize(executorId: String): Unit = {
+    this.executorId = Some(executorId)
+
     loadScript("add_reservation")
     loadScript("remove_reservation")
     loadScript("next_reservation")
     loadScript("task_launched")
     loadScript("task_rejected")
     loadScript("task_finished")
+  }
+
+  override def reset(): Unit = {
+    logInfo("Flushing redis pool backend")
+    redis.flushDB()
   }
 
   implicit def writePoolDescription(pool: FlarePoolDescription): JValue = {
@@ -61,7 +71,7 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executo
 
   override def addReservation(reservationId: FlareReservationId, count: Int, groups: Seq[FlarePoolDescription]): Unit = {
     evalScript("add_reservation",
-      executorId,
+      executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized")),
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
       reservationId.driverId.toString,
@@ -71,21 +81,22 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executo
 
   override def removeReservation(reservationId: FlareReservationId): Unit = {
     evalScript("remove_reservation",
-      executorId,
+      executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized")),
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
       reservationId.driverId.toString)
   }
 
   override def nextReservation(): Option[FlareReservationId] = {
-    Option(evalScript("next_reservation", executorId))
+    Option(evalScript("next_reservation",
+      executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized"))))
       .map(_.asInstanceOf[java.util.List[String]])
       .map(result => FlareReservationId(result(0).toInt, result(1).toInt, result(2).toInt))
   }
 
   override def taskRejected(reservationId: FlareReservationId): Unit = {
     evalScript("task_rejected",
-      executorId,
+      executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized")),
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
       reservationId.driverId.toString)
@@ -94,7 +105,7 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executo
 
   override def taskLaunched(reservationId: FlareReservationId): Unit = {
     evalScript("task_launched",
-      executorId,
+      executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized")),
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
       reservationId.driverId.toString)
@@ -103,7 +114,7 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration, executo
 
   override def taskFinished(reservationId: FlareReservationId): Unit = {
     evalScript("task_finished",
-      executorId,
+      executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized")),
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
       reservationId.driverId.toString)
