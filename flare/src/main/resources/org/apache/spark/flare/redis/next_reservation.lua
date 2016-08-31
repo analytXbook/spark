@@ -34,13 +34,13 @@ end
 
 local fair_comparator = function(p1, p2)
 	local p1_active_tasks = (p1.running_tasks or 0) + (p1.pending_tasks or 0)
-	local p2_active_tasks = (p1.running_tasks or 0) + (p2.pending_tasks or 0)
+	local p2_active_tasks = (p2.running_tasks or 0) + (p2.pending_tasks or 0)
 
 	local p1_maxed = p1.max_share ~= nil and (p1.max_share > p1_active_tasks)
 	local p2_maxed = p2.max_share ~= nil and (p2.max_share > p2_active_tasks)
 	
 	if p1_maxed and p2_maxed then
-		return p1.name < p1.name
+		return p1.name < p2.name
 	elseif p1_maxed and not p2_maxed then	
 		return false
 	elseif not p1_maxed and p2_maxed then
@@ -105,7 +105,7 @@ local function next_reservation(parent_path)
 				add_pending_task(pool_path)
 				return {stage.stage_id, stage.attempt_id, stage.driver_id}
       end
-    elseif pool.max_share and pool.max_share > pool.running_tasks or true then
+    elseif pool.max_share and pool.max_share > (pool.running_tasks + pool.pending_tasks) or true then
 			  return next_reservation(pool_path)
     end
   end
