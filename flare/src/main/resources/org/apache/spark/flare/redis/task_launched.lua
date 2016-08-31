@@ -26,7 +26,7 @@ local task_launched = function()
   local parent_path = redis.call("HGET", stage_key, "parent_pool")
 
   if parent_path then
-    local stage_pool_path = parent_path.."."..stage_name
+    local stage_pool_path = parent_path ~= "root" and parent_path.."."..stage_name or stage_name
 
     add_running_task(stage_pool_path)
   end
