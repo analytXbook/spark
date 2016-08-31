@@ -89,7 +89,7 @@ private[spark] class FlareExecutorBackend(
             attemptLaunchReservation()
             attemptLaunchScheduled.set(false)
           }
-        }, 300, TimeUnit.MILLISECONDS)
+        }, 1000, TimeUnit.MILLISECONDS)
       attemptLaunchScheduled.set(true)
     }
   }
@@ -174,7 +174,7 @@ private[spark] class FlareExecutorBackend(
         val startTime = System.currentTimeMillis()
         val nextReservation = poolBackend.nextReservation
         val duration = System.currentTimeMillis() - startTime
-        logDebug(s"nextReservation took $duration ms, has result: ${nextReservation.isDefined}")
+        logDebug(s"nextReservation took $duration ms, result: $nextReservation")
 
         nextReservation match {
           case Some(reservationId) => {
@@ -182,11 +182,11 @@ private[spark] class FlareExecutorBackend(
             attemptLaunchReservation()
           }
           case None => {
+            //it is possible that no reservation comes back due to all max-shares being reached
+            //schedule another launch attempt in the future to handle this case
             scheduleAttemptLaunchReservation()
           }
         }
-      } else {
-        scheduleAttemptLaunchReservation()
       }
     }
     case RedemptionRejected(reservationId) => {
