@@ -67,7 +67,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
     stageId: Int,
     stageAttemptId: Int,
     executorIds: Seq[String]) = {
-    logDebug(s"Cancelling open reservations for stage ($stageId, $stageAttemptId) on executors: ${executorIds.mkString(",")}")
+    logDebug(s"Cancelling open reservations for stage $stageId.$stageAttemptId on executors: ${executorIds.mkString(",")}")
     executorIds.foreach {
       executorId => {
         val executor = executors(executorId)

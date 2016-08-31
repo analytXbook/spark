@@ -84,6 +84,7 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
   }
 
   def close() = {
+    logInfo("Closing flare cluster connection")
     driverCache.close()
     nodeCache.close()
     executorCache.close()
@@ -94,7 +95,7 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
   def refreshMembers(): Unit = {
     driverCache.rebuild()
     nodeCache.rebuild()
-    driverCache.rebuild()
+    executorCache.rebuild()
   }
 
   def reset() = {

@@ -47,6 +47,7 @@ private[spark] class FlareNode(
   private val poolBackendConf = RedisFlarePoolBackendConfiguration(args.redisHost)
   private val poolBackend = new RedisLuaFlarePoolBackend(poolBackendConf)
 
+
   private def createWorkDir() {
     workDir = workDirPath.map(new File(_)).getOrElse(new File(sparkHome, "work"))
     try {
@@ -72,9 +73,17 @@ private[spark] class FlareNode(
   override def onDriverExited(data: DriverData): Unit = {
     if (cluster.drivers.isEmpty) {
       logInfo("All drivers have exited, resetting cluster")
-      terminateExecutors()
-      cluster.reset()
-      launchExecutors()
+
+      val resetThread = new Thread(new Runnable {
+        override def run(): Unit = {
+          terminateExecutors()
+          cluster.reset()
+          launchExecutors()
+        }
+      }, "flare-reset-thread")
+
+      resetThread.setDaemon(true)
+      resetThread.start()
     }
   }
 
@@ -162,6 +171,7 @@ private[spark] class FlareNode(
   def shutdown() = {
     terminateExecutors()
     cluster.close()
+    logInfo("Shutdown complete")
   }
 }
 

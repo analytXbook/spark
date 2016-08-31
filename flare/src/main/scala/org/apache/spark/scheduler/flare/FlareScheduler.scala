@@ -135,18 +135,14 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
     managersByStageIdAndAttempt(stageId)(stageAttemptId).isMaxParallelism
   
   def redeemReservation(stageId: Int, stageAttemptId: Int, executorId: String, host: String): Option[TaskDescription] = synchronized {
-    managersByStageIdAndAttempt.get(stageId).flatMap(_.get(stageAttemptId)) match {
-      case Some(manager) => {
+    managersByStageIdAndAttempt.get(stageId).flatMap(_.get(stageAttemptId)).flatMap {
+      manager => {
         val taskOpt = manager.getTask(executorId, host)
         taskOpt.foreach { task => 
           taskIdToReservationManager(task.taskId) = manager
           taskIdToExecutorId(task.taskId) = executorId
         }
         taskOpt
-      }
-      case None => {
-        logDebug(s"Could not find reservation manager for $stageId, $stageAttemptId")
-        None
       }
     }
   }
