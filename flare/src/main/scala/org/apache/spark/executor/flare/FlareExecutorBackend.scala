@@ -104,7 +104,6 @@ private[spark] class FlareExecutorBackend(
 
   private def launchReservation(reservationId: FlareReservationId): Unit = {
     activeTasks.incrementAndGet()
-    poolBackend.taskLaunched(reservationId)
 
     val driverEndpoint = driverEndpoints(reservationId)
     driverEndpoint.ask[RedeemReservationResponse](RedeemReservation(reservationId, executorId, hostname)) onComplete {
@@ -117,6 +116,7 @@ private[spark] class FlareExecutorBackend(
           taskToReservationId(taskDesc.taskId) = reservationId
           reservationTasks.addBinding(reservationId, taskDesc.taskId)
           executor.launchTask(this, taskDesc.taskId, taskDesc.attemptNumber, taskDesc.name, taskDesc.serializedTask)
+          poolBackend.taskLaunched(reservationId)
         case _ =>
       }
       case Failure(failure) =>
@@ -171,10 +171,10 @@ private[spark] class FlareExecutorBackend(
     case CancelReservation(reservationId) => cancelReservation(reservationId)
     case AttemptLaunchReservation => {
       if (activeTasks.get < cores) {
-        val startTime = System.currentTimeMillis()
+        val startTime = System.nanoTime()
         val nextReservation = poolBackend.nextReservation
-        val duration = System.currentTimeMillis() - startTime
-        logDebug(s"nextReservation took $duration ms, result: $nextReservation")
+        val duration = System.nanoTime() - startTime
+        logDebug(s"nextReservation took $duration ns, result: $nextReservation")
 
         nextReservation match {
           case Some(reservationId) => {
