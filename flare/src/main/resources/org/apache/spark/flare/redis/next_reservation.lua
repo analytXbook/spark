@@ -96,7 +96,7 @@ local function next_reservation(parent_path)
 
 	table.sort(child_pools, fair_comparator)
 
-	for i, pool in ipairs(child_pools) do
+	for _, pool in ipairs(child_pools) do
     local pool_path = parent_path == "root" and pool.name or parent_path.."."..pool.name
 		if pool.is_stage then
       local stage = get_stage(pool.name)
@@ -105,8 +105,11 @@ local function next_reservation(parent_path)
 				add_pending_task(pool_path)
 				return {stage.stage_id, stage.attempt_id, stage.driver_id}
       end
-    elseif pool.max_share and pool.max_share > (pool.running_tasks + pool.pending_tasks) or true then
-			  return next_reservation(pool_path)
+    elseif not (pool.max_share and pool.max_share <= (pool.running_tasks + pool.pending_tasks)) then
+      local foundReservation = next_reservation(pool_path)
+      if foundReservation then
+        return foundReservation
+      end
     end
   end
 	
