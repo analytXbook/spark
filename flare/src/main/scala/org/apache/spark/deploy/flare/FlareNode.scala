@@ -47,7 +47,6 @@ private[spark] class FlareNode(
   private val poolBackendConf = RedisFlarePoolBackendConfiguration(args.redisHost)
   private val poolBackend = new RedisLuaFlarePoolBackend(poolBackendConf)
 
-
   private def createWorkDir() {
     workDir = workDirPath.map(new File(_)).getOrElse(new File(sparkHome, "work"))
     try {
@@ -170,6 +169,7 @@ private[spark] class FlareNode(
 
   def shutdown() = {
     terminateExecutors()
+    poolBackend.close()
     cluster.close()
     logInfo("Shutdown complete")
   }

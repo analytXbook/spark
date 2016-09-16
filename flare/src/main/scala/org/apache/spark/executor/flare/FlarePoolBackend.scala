@@ -5,7 +5,7 @@ import org.apache.spark.scheduler.flare.{FlarePoolDescription, FlareReservationI
 import org.json4s._
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
-import redis.clients.jedis.{Jedis, ZParams}
+import redis.clients.jedis.{Jedis, JedisPool, ZParams}
 
 import scala.collection.JavaConversions._
 import scala.collection.mutable
@@ -20,24 +20,36 @@ trait FlarePoolBackend {
   def taskFinished(reservationId: FlareReservationId): Unit
   def nextReservation(): Option[FlareReservationId]
   def reset(): Unit
+  def close(): Unit
 }
 
 case class RedisFlarePoolBackendConfiguration(host: String)
 
 class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration) extends FlarePoolBackend with Logging {
-  private val redis = new Jedis(conf.host)
+  private val jedisPool = new JedisPool(conf.host)
 
   private def loadScript(scriptName: String): Unit = {
     val source = Source.fromInputStream(getClass.getResourceAsStream(s"/org/apache/spark/flare/redis/$scriptName.lua"))
     val script = source.mkString
-    scriptSHA(scriptName) = redis.scriptLoad(script)
+    scriptSHA(scriptName) = withJedis(_.scriptLoad(script))
   }
 
   private val scriptSHA = mutable.Map[String, String]()
 
+  private def withJedis[A](f: Jedis => A): A = {
+    val jedis = jedisPool.getResource
+    try {
+      f(jedis)
+    } finally {
+      if (jedis != null) {
+        jedis.close()
+      }
+    }
+  }
+
   private def evalScript(scriptName: String, args: String*): AnyRef = {
     try {
-      redis.evalsha(scriptSHA(scriptName), 0, args: _*)
+      withJedis(_.evalsha(scriptSHA(scriptName), 0, args: _*))
     } catch {
       case ex: Exception =>
         throw new RuntimeException(s"Failed to run script '$scriptName', args = (${args.mkString(" ")})", ex)
@@ -59,7 +71,11 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration) extends
 
   override def reset(): Unit = {
     logInfo("Flushing redis pool backend")
-    redis.flushDB()
+    withJedis(_.flushDB())
+  }
+
+  override def close(): Unit = {
+    jedisPool.destroy()
   }
 
   implicit def writePoolDescription(pool: FlarePoolDescription): JValue = {
