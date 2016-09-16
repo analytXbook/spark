@@ -148,6 +148,7 @@ private[spark] class FlareExecutorBackend(
     stop()
     rpcEnv.shutdown()
     proxyRpcEnv.shutdown()
+    poolBackend.close()
     cluster.close()
   }
 
