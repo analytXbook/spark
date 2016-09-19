@@ -3,7 +3,6 @@ package org.apache.spark.scheduler.flare
 import java.io.NotSerializableException
 import java.nio.ByteBuffer
 import java.util.Properties
-import java.util.concurrent.ConcurrentHashMap
 
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.executor.TaskMetrics
@@ -12,7 +11,7 @@ import org.apache.spark.util.{Clock, SystemClock, Utils}
 import org.apache.spark._
 
 import scala.collection.mutable.{HashMap, HashSet, ListBuffer, MultiMap, Set}
-import scala.collection.JavaConverters._
+import scala.collection.mutable
 import scala.util.Random
 import scala.util.control.NonFatal
 
@@ -39,20 +38,20 @@ private[spark] class FlareReservationManager(
   val tasks = taskSet.tasks
   val numTasks = tasks.length
 
-  val unlaunchedConstrainedTasks = new HashMap[String, Set[Int]] with MultiMap[String, Int]
-  val unlaunchedUnconstrainedTasks = new ListBuffer[Int]
+  val unlaunchedConstrainedTasks = new HashMap[String, Set[Int]] with mutable.SynchronizedMap[Int, Set[Int]] with MultiMap[String, Int]
+  val unlaunchedUnconstrainedTasks = new ListBuffer[Int] with mutable.SynchronizedBuffer[List]
 
-  val pendingConstrainedTaskReservations = new HashMap[Int, Set[String]] with MultiMap[Int, String]
-  val pendingReservations = new HashMap[String, Int].withDefaultValue(0)
+  val pendingConstrainedTaskReservations = new HashMap[Int, Set[String]] with mutable.SynchronizedMap[Int, Set[String]] with MultiMap[Int, String]
+  val pendingReservations = (new HashMap[String, Int] with mutable.SynchronizedMap[String, Int]).withDefaultValue(0)
 
-  val runningTasks = new HashSet[Long]
+  val runningTasks = new HashSet[Long] with mutable.SynchronizedSet[Long]
 
   def runningTaskCount: Int = runningTasks.size
 
-  val taskInfos = new ConcurrentHashMap[Long, TaskInfo].asScala
+  val taskInfos = new HashMap[Long, TaskInfo] with mutable.SynchronizedMap[Long, TaskInfo]
 
-  val taskAttempts = Array.fill[List[TaskInfo]](numTasks)(Nil)
-  val successful = new Array[Boolean](numTasks)
+  @volatile val taskAttempts = Array.fill[List[TaskInfo]](numTasks)(Nil)
+  @volatile val successful = new Array[Boolean](numTasks)
 
   var tasksSuccessful = 0
 
