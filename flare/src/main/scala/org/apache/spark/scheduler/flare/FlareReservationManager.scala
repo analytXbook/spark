@@ -38,7 +38,7 @@ private[spark] class FlareReservationManager(
   val tasks = taskSet.tasks
   val numTasks = tasks.length
 
-  val unlaunchedConstrainedTasks = new HashMap[String, Set[Int]] with mutable.SynchronizedMap[Int, Set[Int]] with MultiMap[String, Int]
+  val unlaunchedConstrainedTasks = new HashMap[String, Set[Int]] with mutable.SynchronizedMap[String, Set[Int]] with MultiMap[String, Int]
   val unlaunchedUnconstrainedTasks = new ArrayBuffer[Int] with mutable.SynchronizedBuffer[Int]
 
   val pendingConstrainedTaskReservations = new HashMap[Int, Set[String]] with mutable.SynchronizedMap[Int, Set[String]] with MultiMap[Int, String]
