@@ -43,5 +43,5 @@ package org.apache
 
 package object spark {
   // For package docs only
-  val SPARK_VERSION = "1.6.1+flare.18-SNAPSHOT"
+  val SPARK_VERSION = "1.6.1+flare.19-SNAPSHOT"
 }
