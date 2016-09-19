@@ -50,8 +50,8 @@ private[spark] class FlareReservationManager(
 
   val taskInfos = new HashMap[Long, TaskInfo] with mutable.SynchronizedMap[Long, TaskInfo]
 
-  @volatile val taskAttempts = Array.fill[List[TaskInfo]](numTasks)(Nil)
-  @volatile val successful = new Array[Boolean](numTasks)
+  val taskAttempts = Array.fill[List[TaskInfo]](numTasks)(Nil)
+  val successful = new Array[Boolean](numTasks)
 
   var tasksSuccessful = 0
 
