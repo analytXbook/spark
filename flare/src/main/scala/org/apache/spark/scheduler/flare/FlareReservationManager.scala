@@ -10,7 +10,7 @@ import org.apache.spark.scheduler._
 import org.apache.spark.util.{Clock, SystemClock, Utils}
 import org.apache.spark._
 
-import scala.collection.mutable.{HashMap, HashSet, ListBuffer, MultiMap, Set}
+import scala.collection.mutable.{HashMap, HashSet, ArrayBuffer, MultiMap, Set, ListBuffer}
 import scala.collection.mutable
 import scala.util.Random
 import scala.util.control.NonFatal
@@ -39,7 +39,7 @@ private[spark] class FlareReservationManager(
   val numTasks = tasks.length
 
   val unlaunchedConstrainedTasks = new HashMap[String, Set[Int]] with mutable.SynchronizedMap[Int, Set[Int]] with MultiMap[String, Int]
-  val unlaunchedUnconstrainedTasks = new ListBuffer[Int] with mutable.SynchronizedBuffer[List]
+  val unlaunchedUnconstrainedTasks = new ArrayBuffer[Int] with mutable.SynchronizedBuffer[Int]
 
   val pendingConstrainedTaskReservations = new HashMap[Int, Set[String]] with mutable.SynchronizedMap[Int, Set[String]] with MultiMap[Int, String]
   val pendingReservations = (new HashMap[String, Int] with mutable.SynchronizedMap[String, Int]).withDefaultValue(0)
