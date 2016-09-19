@@ -117,6 +117,10 @@ private[spark] class FlareReservationManager(
     val reservations = new ListBuffer[String]
     for (index <- 0 until numTasks) {
       val task = tasks(index)
+
+      logDebug(s"Preferred locations for task $index in stage ${task.stageId},${task.stageAttemptId}: ${task.preferredLocations.mkString(",")}")
+      logDebug(s"Current Executors: ${scheduler.executorsByHost}")
+
       if (task.preferredLocations.isEmpty)
         unlaunchedUnconstrainedTasks += index
       else {
@@ -166,12 +170,11 @@ private[spark] class FlareReservationManager(
         untriedExecutors(Random.nextInt(untriedExecutors.length))
       }
     } else {
-      val pendingExecutors = pendingConstrainedTaskReservations.get(index).map(_.toSeq).getOrElse(List.empty)
 
       val preferredExecutors = task.preferredLocations.flatMap {
         case ExecutorCacheTaskLocation(host, executorId) => List(executorId)
         case taskLocation => scheduler.executorsByHost.get(taskLocation.host).getOrElse(List.empty)
-      }.diff(pendingExecutors).diff(triedExecutors)
+      }.diff(triedExecutors)
 
       if (preferredExecutors.isEmpty) {
         logDebug(s"No additional executors could be found matching placement constraints for failed task $taskId, allowing task to run unconstrained")
@@ -181,6 +184,7 @@ private[spark] class FlareReservationManager(
 
         val targetExecutor = preferredExecutors(Random.nextInt(preferredExecutors.length))
         unlaunchedConstrainedTasks.addBinding(targetExecutor, index)
+        pendingConstrainedTaskReservations.addBinding(index, targetExecutor)
         targetExecutor
       }
     }
@@ -355,8 +359,10 @@ private[spark] class FlareReservationManager(
     val selectedTask: Option[Int] = {
       if (unlaunchedConstrainedTasks.contains(executorId)) {
         val index = unlaunchedConstrainedTasks(executorId).head
-        pendingConstrainedTaskReservations.removeBinding(index, executorId)
-        unlaunchedConstrainedTasks.removeBinding(executorId, index)
+
+        pendingConstrainedTaskReservations.remove(index).foreach(
+          _.foreach(unlaunchedConstrainedTasks.removeBinding(_, index)))
+
         Some(index)
       }
       else if (!unlaunchedUnconstrainedTasks.isEmpty) {
