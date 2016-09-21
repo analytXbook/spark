@@ -134,7 +134,7 @@ class DAGScheduler(
 
   private[scheduler] val nextJobId = new AtomicInteger(0)
   private[scheduler] def numTotalJobs: Int = nextJobId.get()
-  private val nextStageId = new AtomicInteger(0)
+  private val stageIdGenerator = IntegerIdGenerator(sc)
 
   private[scheduler] val jobIdToStageIds = new HashMap[Int, HashSet[Int]]
   private[scheduler] val stageIdToStage = new HashMap[Int, Stage]
@@ -297,7 +297,7 @@ class DAGScheduler(
    */
   private def getParentStagesAndId(rdd: RDD[_], firstJobId: Int): (List[Stage], Int) = {
     val parentStages = getParentStages(rdd, firstJobId)
-    val id = nextStageId.getAndIncrement()
+    val id = stageIdGenerator.next()
     (parentStages, id)
   }
 
