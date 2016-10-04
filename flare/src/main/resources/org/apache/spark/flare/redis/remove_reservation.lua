@@ -17,13 +17,34 @@ local hdel_and_is_empty = function(key, field)
     return redis.call("HLEN", key) == 0
 end
 
+local function cleanup_active_tasks(pool_path, running_tasks, pending_tasks)
+  
+    if running_tasks > 0 then
+        redis.call("HINCRBY", "flare:pool:"..pool_path, "running_tasks", -1 * running_tasks)
+    end
+    if pending_tasks > 0 then
+        redis.call("HINCRBY", "flare:pool:"..pool_path, "pending_tasks", -1 * pending_tasks)
+    end
+
+    if pool_path == "root" then
+        return true
+    end
+
+    local last_pool_index = pool_path:find("%.[^%.]*$")
+    local parent_path = last_pool_index and pool_path:sub(1, last_pool_index - 1) or "root"
+
+    return cleanup_active_tasks(parent_path, running_tasks, pending_tasks)
+end
+
 local function cleanup_pool(pool_path, child, child_deleted)
     local pool_key = "flare:pool:"..pool_path
     local pool_deleted = false
 
-    if child_deleted and srem_and_is_empty(pool_key..":children", child) then
-        redis.call("DEL", pool_key)
-        pool_deleted = true
+    if child_deleted then
+        if srem_and_is_empty(pool_key..":children", child) then
+            redis.call("DEL", pool_key)
+            pool_deleted = true
+        end
     end
 
     if srem_and_is_empty(pool_key..":executor_children:"..executor, child) then
@@ -58,8 +79,16 @@ local remove_reservation = function()
     if parent_path then
         if hdel_and_is_empty(stage_key..":reservations", executor) then
             local stage_pool_path = parent_path ~= "root" and parent_path.."."..stage_name or stage_name
-            redis.call("DEL", "flare:pool:"..stage_pool_path)
+            local stage_pool_key = "flare:pool:"..stage_pool_path
 
+            local stage_running_tasks = tonumber(redis.call("HGET", stage_pool_key, "running_tasks"))
+            local stage_pending_tasks = tonumber(redis.call("HGET", stage_pool_key, "pending_tasks"))
+
+            if stage_pending_tasks > 0 or stage_running_tasks > 0 then
+                cleanup_active_tasks(parent_path, stage_running_tasks, stage_pending_tasks)
+            end
+
+            redis.call("DEL", stage_pool_key)
             redis.call("DEL", stage_key)
 
             stage_finished = true
