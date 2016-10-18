@@ -398,6 +398,7 @@ private[spark] object JsonProtocol {
     ("RDD ID" -> rddInfo.id) ~
     ("Name" -> rddInfo.name) ~
     ("Scope" -> rddInfo.scope.map(_.toJson)) ~
+    ("Callsite" -> rddInfo.callSite) ~
     ("Parent IDs" -> parentIds) ~
     ("Storage Level" -> storageLevel) ~
     ("Number of Partitions" -> rddInfo.numPartitions) ~
@@ -851,6 +852,7 @@ private[spark] object JsonProtocol {
     val scope = Utils.jsonOption(json \ "Scope")
       .map(_.extract[String])
       .map(RDDOperationScope.fromJson)
+    val callsite = Utils.jsonOption(json \ "Callsite").map(_.extract[String]).getOrElse("")
     val parentIds = Utils.jsonOption(json \ "Parent IDs")
       .map { l => l.extract[List[JValue]].map(_.extract[Int]) }
       .getOrElse(Seq.empty)
@@ -863,7 +865,7 @@ private[spark] object JsonProtocol {
       .getOrElse(json \ "Tachyon Size").extract[Long]
     val diskSize = (json \ "Disk Size").extract[Long]
 
-    val rddInfo = new RDDInfo(rddId, name, numPartitions, storageLevel, parentIds, scope)
+    val rddInfo = new RDDInfo(rddId, name, numPartitions, storageLevel, parentIds, callsite, scope)
     rddInfo.numCachedPartitions = numCachedPartitions
     rddInfo.memSize = memSize
     rddInfo.externalBlockStoreSize = externalBlockStoreSize

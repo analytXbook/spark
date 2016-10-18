@@ -41,10 +41,11 @@ object BuildCommons {
       "streaming-flume", "streaming-kafka", "streaming-mqtt", "streaming-twitter",
       "streaming-zeromq", "launcher", "unsafe", "test-tags").map(ProjectRef(buildLocation, _))
 
-  val optionallyEnabledProjects@Seq(yarn, yarnStable, java8Tests, sparkGangliaLgpl,
-    streamingKinesisAsl) = Seq("yarn", "yarn-stable", "java8-tests", "ganglia-lgpl",
-    "streaming-kinesis-asl", "flare").map(ProjectRef(buildLocation, _))
-
+  val optionallyEnabledProjects@Seq(yarn, java8Tests, sparkGangliaLgpl,
+    streamingKinesisAsl, dockerIntegrationTests, flare) =
+    Seq("yarn", "java8-tests", "ganglia-lgpl", "streaming-kinesis-asl",
+      "docker-integration-tests", "flare").map(ProjectRef(buildLocation, _))
+  
   val assemblyProjects@Seq(assembly, examples, networkYarn, streamingFlumeAssembly, streamingKafkaAssembly, streamingMqttAssembly, streamingKinesisAslAssembly) =
     Seq("assembly", "examples", "network-yarn", "streaming-flume-assembly", "streaming-kafka-assembly", "streaming-mqtt-assembly", "streaming-kinesis-asl-assembly")
       .map(ProjectRef(buildLocation, _))

@@ -32,6 +32,7 @@ import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.storage.BlockManager;
 import org.apache.spark.unsafe.Platform;
+import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
 import org.apache.spark.util.TaskCompletionListener;
 import org.apache.spark.util.Utils;
@@ -123,9 +124,8 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
     this.writeMetrics = new ShuffleWriteMetrics();
 
     if (existingInMemorySorter == null) {
-      this.inMemSorter =
-        new UnsafeInMemorySorter(taskMemoryManager, recordComparator, prefixComparator, initialSize);
-      acquireMemory(inMemSorter.getMemoryUsage());
+      this.inMemSorter = new UnsafeInMemorySorter(
+        this, taskMemoryManager, recordComparator, prefixComparator, initialSize);
     } else {
       this.inMemSorter = existingInMemorySorter;
     }
@@ -277,9 +277,8 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
       deleteSpillFiles();
       freeMemory();
       if (inMemSorter != null) {
-        long used = inMemSorter.getMemoryUsage();
+        inMemSorter.free();
         inMemSorter = null;
-        releaseMemory(used);
       }
     }
   }
@@ -293,26 +292,12 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
     assert(inMemSorter != null);
     if (!inMemSorter.hasSpaceForAnotherRecord()) {
       long used = inMemSorter.getMemoryUsage();
-      long needed = used + inMemSorter.getMemoryToExpand();
-      try {
-        acquireMemory(needed);  // could trigger spilling
-      } catch (OutOfMemoryError e) {
-        // should have trigger spilling
-        assert(inMemSorter.hasSpaceForAnotherRecord());
-        return;
-      }
+      LongArray array = allocateArray(used / 8 * 2);
       // check if spilling is triggered or not
       if (inMemSorter.hasSpaceForAnotherRecord()) {
-        releaseMemory(needed);
+        freeArray(array);
       } else {
-        try {
-          inMemSorter.expandPointerArray();
-          releaseMemory(used);
-        } catch (OutOfMemoryError oom) {
-          // Just in case that JVM had run out of memory
-          releaseMemory(needed);
-          spill();
-        }
+        inMemSorter.expandPointerArray(array);
       }
     }
   }
@@ -449,6 +434,7 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
         UnsafeInMemorySorter.SortedIterator inMemIterator =
           ((UnsafeInMemorySorter.SortedIterator) upstream).clone();
 
+        // Iterate over the records that have not been returned and spill them.
         final UnsafeSorterSpillWriter spillWriter =
           new UnsafeSorterSpillWriter(blockManager, fileBufferSizeBytes, writeMetrics, numRecords);
         while (inMemIterator.hasNext()) {
@@ -464,9 +450,11 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
 
         long released = 0L;
         synchronized (UnsafeExternalSorter.this) {
-          // release the pages except the one that is used
+          // release the pages except the one that is used. There can still be a caller that
+          // is accessing the current record. We free this page in that caller's next loadNext()
+          // call.
           for (MemoryBlock page : allocatedPages) {
-            if (!loaded || page.getBaseObject() != inMemIterator.getBaseObject()) {
+            if (!loaded || page.getBaseObject() != upstream.getBaseObject()) {
               released += page.size();
               freePage(page);
             } else {
@@ -475,6 +463,12 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
           }
           allocatedPages.clear();
         }
+
+        // in-memory sorter will not be used after spilling
+        assert(inMemSorter != null);
+        released += inMemSorter.getMemoryUsage();
+        inMemSorter.free();
+        inMemSorter = null;
         return released;
       }
     }
@@ -496,11 +490,6 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
           }
           upstream = nextUpstream;
           nextUpstream = null;
-
-          assert(inMemSorter != null);
-          long used = inMemSorter.getMemoryUsage();
-          inMemSorter = null;
-          releaseMemory(used);
         }
         numRecords--;
         upstream.loadNext();

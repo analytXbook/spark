@@ -19,12 +19,12 @@ package org.apache.spark.sql.hive.client
 
 import java.io.{File, PrintStream}
 import java.util.{Map => JMap}
-import javax.annotation.concurrent.GuardedBy
 
 import scala.collection.JavaConverters._
 import scala.language.reflectiveCalls
 
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.hive.cli.CliSessionState
 import org.apache.hadoop.hive.conf.HiveConf
 import org.apache.hadoop.hive.metastore.api.{Database, FieldSchema}
 import org.apache.hadoop.hive.metastore.{TableType => HTableType}
@@ -33,9 +33,10 @@ import org.apache.hadoop.hive.ql.processors._
 import org.apache.hadoop.hive.ql.session.SessionState
 import org.apache.hadoop.hive.ql.{Driver, metadata}
 import org.apache.hadoop.hive.shims.{HadoopShims, ShimLoader}
+import org.apache.hadoop.security.UserGroupInformation
 import org.apache.hadoop.util.VersionInfo
 
-import org.apache.spark.Logging
+import org.apache.spark.{SparkConf, SparkException, Logging}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.QueryExecutionException
 import org.apache.spark.util.{CircularBuffer, Utils}
@@ -150,30 +151,61 @@ private[hive] class ClientWrapper(
     val original = Thread.currentThread().getContextClassLoader
     // Switch to the initClassLoader.
     Thread.currentThread().setContextClassLoader(initClassLoader)
+
+    // Set up kerberos credentials for UserGroupInformation.loginUser within
+    // current class loader
+    // Instead of using the spark conf of the current spark context, a new
+    // instance of SparkConf is needed for the original value of spark.yarn.keytab
+    // and spark.yarn.principal set in SparkSubmit, as yarn.Client resets the
+    // keytab configuration for the link name in distributed cache
+    val sparkConf = new SparkConf
+    if (sparkConf.contains("spark.yarn.principal") && sparkConf.contains("spark.yarn.keytab")) {
+      val principalName = sparkConf.get("spark.yarn.principal")
+      val keytabFileName = sparkConf.get("spark.yarn.keytab")
+      if (!new File(keytabFileName).exists()) {
+        throw new SparkException(s"Keytab file: ${keytabFileName}" +
+          " specified in spark.yarn.keytab does not exist")
+      } else {
+        logInfo("Attempting to login to Kerberos" +
+          s" using principal: ${principalName} and keytab: ${keytabFileName}")
+        UserGroupInformation.loginUserFromKeytab(principalName, keytabFileName)
+      }
+    }
+
     val ret = try {
-      val initialConf = new HiveConf(classOf[SessionState])
-      // HiveConf is a Hadoop Configuration, which has a field of classLoader and
-      // the initial value will be the current thread's context class loader
-      // (i.e. initClassLoader at here).
-      // We call initialConf.setClassLoader(initClassLoader) at here to make
-      // this action explicit.
-      initialConf.setClassLoader(initClassLoader)
-      config.foreach { case (k, v) =>
-        if (k.toLowerCase.contains("password")) {
-          logDebug(s"Hive Config: $k=xxx")
-        } else {
-          logDebug(s"Hive Config: $k=$v")
+      // originState will be created if not exists, will never be null
+      val originalState = SessionState.get()
+      if (originalState.isInstanceOf[CliSessionState]) {
+        // In `SparkSQLCLIDriver`, we have already started a `CliSessionState`,
+        // which contains information like configurations from command line. Later
+        // we call `SparkSQLEnv.init()` there, which would run into this part again.
+        // so we should keep `conf` and reuse the existing instance of `CliSessionState`.
+        originalState
+      } else {
+        val initialConf = new HiveConf(classOf[SessionState])
+        // HiveConf is a Hadoop Configuration, which has a field of classLoader and
+        // the initial value will be the current thread's context class loader
+        // (i.e. initClassLoader at here).
+        // We call initialConf.setClassLoader(initClassLoader) at here to make
+        // this action explicit.
+        initialConf.setClassLoader(initClassLoader)
+        config.foreach { case (k, v) =>
+          if (k.toLowerCase.contains("password")) {
+            logDebug(s"Hive Config: $k=xxx")
+          } else {
+            logDebug(s"Hive Config: $k=$v")
+          }
+          initialConf.set(k, v)
         }
-        initialConf.set(k, v)
+        val state = new SessionState(initialConf)
+        if (clientLoader.cachedHive != null) {
+          Hive.set(clientLoader.cachedHive.asInstanceOf[Hive])
+        }
+        SessionState.start(state)
+        state.out = new PrintStream(outputBuffer, true, "UTF-8")
+        state.err = new PrintStream(outputBuffer, true, "UTF-8")
+        state
       }
-      val state = new SessionState(initialConf)
-      if (clientLoader.cachedHive != null) {
-        Hive.set(clientLoader.cachedHive.asInstanceOf[Hive])
-      }
-      SessionState.start(state)
-      state.out = new PrintStream(outputBuffer, true, "UTF-8")
-      state.err = new PrintStream(outputBuffer, true, "UTF-8")
-      state
     } finally {
       Thread.currentThread().setContextClassLoader(original)
     }
@@ -548,7 +580,15 @@ private[hive] class ClientWrapper(
   }
 
   def addJar(path: String): Unit = {
-    clientLoader.addJar(path)
+    val uri = new Path(path).toUri
+    val jarURL = if (uri.getScheme == null) {
+      // `path` is a local file path without a URL scheme
+      new File(path).toURI.toURL
+    } else {
+      // `path` is a URL with a scheme
+      uri.toURL
+    }
+    clientLoader.addJar(jarURL)
     runSqlHive(s"ADD JAR $path")
   }
 

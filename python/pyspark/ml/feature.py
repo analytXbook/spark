@@ -1263,7 +1263,7 @@ class StringIndexer(JavaEstimator, HasInputCol, HasOutputCol, HasHandleInvalid):
     >>> sorted(set([(i[0], i[1]) for i in td.select(td.id, td.indexed).collect()]),
     ...     key=lambda x: x[0])
     [(0, 0.0), (1, 2.0), (2, 1.0), (3, 0.0), (4, 0.0), (5, 1.0)]
-    >>> inverter = IndexToString(inputCol="indexed", outputCol="label2", labels=model.labels())
+    >>> inverter = IndexToString(inputCol="indexed", outputCol="label2", labels=model.labels)
     >>> itd = inverter.transform(td)
     >>> sorted(set([(i[0], str(i[1])) for i in itd.select(itd.id, itd.label2).collect()]),
     ...     key=lambda x: x[0])
@@ -1305,13 +1305,14 @@ class StringIndexerModel(JavaModel):
 
     .. versionadded:: 1.4.0
     """
+
     @property
     @since("1.5.0")
     def labels(self):
         """
         Ordered list of labels, corresponding to indices to be assigned.
         """
-        return self._java_obj.labels
+        return self._call_java("labels")
 
 
 @inherit_doc
@@ -1788,21 +1789,21 @@ class Word2Vec(JavaEstimator, HasStepSize, HasMaxIter, HasSeed, HasInputCol, Has
     +----+--------------------+
     |word|              vector|
     +----+--------------------+
-    |   a|[-0.3511952459812...|
-    |   b|[0.29077222943305...|
-    |   c|[0.02315592765808...|
+    |   a|[0.09461779892444...|
+    |   b|[1.15474212169647...|
+    |   c|[-0.3794820010662...|
     +----+--------------------+
     ...
     >>> model.findSynonyms("a", 2).show()
-    +----+-------------------+
-    |word|         similarity|
-    +----+-------------------+
-    |   b|0.29255685145799626|
-    |   c|-0.5414068302988307|
-    +----+-------------------+
+    +----+--------------------+
+    |word|          similarity|
+    +----+--------------------+
+    |   b| 0.16782984556103436|
+    |   c|-0.46761559092107646|
+    +----+--------------------+
     ...
     >>> model.transform(doc).head().model
-    DenseVector([-0.0422, -0.5138, -0.2546, 0.6885, 0.276])
+    DenseVector([0.5524, -0.4995, -0.3599, 0.0241, 0.3461])
 
     .. versionadded:: 1.4.0
     """

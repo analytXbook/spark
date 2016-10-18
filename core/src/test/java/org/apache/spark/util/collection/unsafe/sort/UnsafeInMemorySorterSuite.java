@@ -23,6 +23,7 @@ import org.junit.Test;
 
 import org.apache.spark.HashPartitioner;
 import org.apache.spark.SparkConf;
+import org.apache.spark.memory.TestMemoryConsumer;
 import org.apache.spark.memory.TestMemoryManager;
 import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.unsafe.Platform;
@@ -44,9 +45,11 @@ public class UnsafeInMemorySorterSuite {
 
   @Test
   public void testSortingEmptyInput() {
-    final UnsafeInMemorySorter sorter = new UnsafeInMemorySorter(
-      new TaskMemoryManager(
-        new TestMemoryManager(new SparkConf().set("spark.unsafe.offHeap", "false")), 0),
+    final TaskMemoryManager memoryManager = new TaskMemoryManager(
+      new TestMemoryManager(new SparkConf().set("spark.memory.offHeap.enabled", "false")), 0);
+    final TestMemoryConsumer consumer = new TestMemoryConsumer(memoryManager);
+    final UnsafeInMemorySorter sorter = new UnsafeInMemorySorter(consumer,
+      memoryManager,
       mock(RecordComparator.class),
       mock(PrefixComparator.class),
       100);
@@ -68,7 +71,8 @@ public class UnsafeInMemorySorterSuite {
       "Mango"
     };
     final TaskMemoryManager memoryManager = new TaskMemoryManager(
-      new TestMemoryManager(new SparkConf().set("spark.unsafe.offHeap", "false")), 0);
+      new TestMemoryManager(new SparkConf().set("spark.memory.offHeap.enabled", "false")), 0);
+    final TestMemoryConsumer consumer = new TestMemoryConsumer(memoryManager);
     final MemoryBlock dataPage = memoryManager.allocatePage(2048, null);
     final Object baseObject = dataPage.getBaseObject();
     // Write the records into the data page:
@@ -102,11 +106,14 @@ public class UnsafeInMemorySorterSuite {
         return (int) prefix1 - (int) prefix2;
       }
     };
-    UnsafeInMemorySorter sorter = new UnsafeInMemorySorter(memoryManager, recordComparator,
+    UnsafeInMemorySorter sorter = new UnsafeInMemorySorter(consumer, memoryManager, recordComparator,
       prefixComparator, dataToSort.length);
     // Given a page of records, insert those records into the sorter one-by-one:
     position = dataPage.getBaseOffset();
     for (int i = 0; i < dataToSort.length; i++) {
+      if (!sorter.hasSpaceForAnotherRecord()) {
+        sorter.expandPointerArray(consumer.allocateArray(sorter.numRecords() * 2 * 2));
+      }
       // position now points to the start of a record (which holds its length).
       final int recordLength = Platform.getInt(baseObject, position);
       final long address = memoryManager.encodePageNumberAndOffset(dataPage, position);
