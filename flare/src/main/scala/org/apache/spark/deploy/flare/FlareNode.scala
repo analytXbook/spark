@@ -9,10 +9,11 @@ import org.apache.spark.deploy.ExecutorState
 import org.apache.spark.executor.flare.{RedisFlarePoolBackendConfiguration, RedisLuaFlarePoolBackend}
 
 import scala.collection.mutable.HashMap
-import org.apache.spark.{Logging, SecurityManager, SparkConf}
+import org.apache.spark.internal.Logging
+import org.apache.spark.{SecurityManager, SparkConf}
 import org.apache.spark.flare.{FlareCluster, _}
 import org.apache.spark.metrics.MetricsSystem
-import org.apache.spark.util.{ShutdownHookManager, SignalLogger}
+import org.apache.spark.util.{ShutdownHookManager, SignalUtils}
 
 private[spark] class FlareNode(
     val args: FlareNodeArguments,
@@ -177,7 +178,7 @@ private[spark] class FlareNode(
 
 object FlareNode extends Logging {
   def main(args: Array[String]) = {
-    SignalLogger.register(log)
+    SignalUtils.registerLogger(log)
     
     val nodeArgs = new FlareNodeArguments(args)
     

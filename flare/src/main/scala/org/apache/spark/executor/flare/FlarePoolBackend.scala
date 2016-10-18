@@ -1,6 +1,8 @@
 package org.apache.spark.executor.flare
 
-import org.apache.spark.Logging
+import scala.language.implicitConversions
+
+import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.flare.{FlarePoolDescription, FlareReservationId}
 import org.json4s._
 import org.json4s.JsonDSL._

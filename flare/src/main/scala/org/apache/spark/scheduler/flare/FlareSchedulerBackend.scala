@@ -1,11 +1,12 @@
 package org.apache.spark.scheduler.flare
 
-import org.apache.spark.{Logging, SparkEnv, SparkException}
+import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.flare.{FlareCluster, _}
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
 import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.flare.FlareMessages._
-import org.apache.spark.util.{AkkaUtils, EncodedId, SerializableBuffer}
+import org.apache.spark.util.{EncodedId, SerializableBuffer}
+import org.apache.spark.internal.Logging
 
 import scala.collection.mutable
 
@@ -27,7 +28,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
   val executorsPendingLossReason = new mutable.HashSet[String]
   val executors = new mutable.HashMap[String, FlareExecutorInfo]
   
-  val akkaFrameSize = AkkaUtils.maxFrameSizeBytes(conf)
+  // val akkaFrameSize = AkkaUtils.maxFrameSizeBytes(conf)
 
   var driverId: Int = _
 

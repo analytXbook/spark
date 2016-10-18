@@ -10,6 +10,7 @@ import java.nio.ByteBuffer
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.util.Utils
 import scala.language.existentials
+import org.apache.spark.internal.Logging
 
 
 private[spark] class FlareTaskResultGetter(
@@ -60,12 +61,12 @@ private[spark] class FlareTaskResultGetter(
                 return
               }
               val deserializedResult = serializer.get().deserialize[DirectTaskResult[_]](
-                serializedTaskResult.get)
+                serializedTaskResult.get.toByteBuffer)
               sparkEnv.blockManager.master.removeBlock(blockId)
               (deserializedResult, size)
           }
 
-          result.metrics.setResultSize(size)
+          // result.metrics.setResultSize(size)
           scheduler.handleSuccessfulTask(reservationManager, taskId, result)
         } catch {
           case cnf: ClassNotFoundException =>

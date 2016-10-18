@@ -7,7 +7,8 @@ import org.apache.spark.serializer.JavaSerializer
 
 import scala.collection.JavaConversions._
 import org.apache.curator.retry.ExponentialBackoffRetry
-import org.apache.spark.{Logging, SparkException}
+import org.apache.spark.SparkException
+import org.apache.spark.internal.Logging
 import org.apache.zookeeper.CreateMode
 import org.apache.spark.util.SerializerUtils._
 
@@ -43,9 +44,9 @@ class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
       Option(event.getData()) foreach {childData =>
         val data = ser.fromBytes[T](childData.getData())
         event.getType match {
-          case CHILD_ADDED => eventBus.post(addedEvent(data))
-          case CHILD_REMOVED => eventBus.post(removedEvent(data))
-          case CHILD_UPDATED => eventBus.post(updatedEvent(data))
+          case CHILD_ADDED => eventBus.postToAll(addedEvent(data))
+          case CHILD_REMOVED => eventBus.postToAll(removedEvent(data))
+          case CHILD_UPDATED => eventBus.postToAll(updatedEvent(data))
         }
       }
     }

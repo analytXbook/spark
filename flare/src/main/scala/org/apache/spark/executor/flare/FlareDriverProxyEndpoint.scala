@@ -3,7 +3,8 @@ package org.apache.spark.executor.flare
 import org.apache.spark.flare._
 import org.apache.spark.rpc.{RpcAddress, RpcCallContext, RpcEndpointRef, ThreadSafeRpcEndpoint}
 import org.apache.spark.util.{EncodedId, ThreadUtils}
-import org.apache.spark.{Logging, SparkEnv}
+import org.apache.spark.SparkEnv
+import org.apache.spark.internal.Logging
 
 import scala.collection.mutable.HashMap
 import scala.concurrent.ExecutionContext
@@ -30,7 +31,7 @@ private[spark] abstract class FlareDriverProxyEndpoint(endpointName: String, clu
   }
   
   private def addDriver(driverId: Int, hostname: String, port: Int) = {
-    val rpcRef = rpcEnv.setupEndpointRef(SparkEnv.driverActorSystemName, RpcAddress(hostname, port), endpointName)
+    val rpcRef = rpcEnv.setupEndpointRef(RpcAddress(hostname, port), endpointName)
     driverRefs(driverId) = rpcRef
   }
   

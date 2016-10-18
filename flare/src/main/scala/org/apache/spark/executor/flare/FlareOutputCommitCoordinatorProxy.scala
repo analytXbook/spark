@@ -1,6 +1,6 @@
 package org.apache.spark.executor.flare
 
-import org.apache.spark.Logging
+import org.apache.spark.internal.Logging
 import org.apache.spark.flare.FlareCluster
 import org.apache.spark.rpc.{RpcCallContext, RpcEnv}
 import org.apache.spark.scheduler.AskPermissionToCommitOutput

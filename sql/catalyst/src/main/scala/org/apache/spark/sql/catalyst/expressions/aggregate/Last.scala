@@ -28,6 +28,8 @@ import org.apache.spark.sql.types._
  * is used) its result will not be deterministic (unless the input table is sorted and has
  * a single partition, and we use a single reducer to do the aggregation.).
  */
+@ExpressionDescription(
+  usage = "_FUNC_(expr,isIgnoreNull) - Returns the last value of `child` for a group of rows.")
 case class Last(child: Expression, ignoreNullsExpr: Expression) extends DeclarativeAggregate {
 
   def this(child: Expression) = this(child, Literal.create(false, BooleanType))
@@ -51,15 +53,15 @@ case class Last(child: Expression, ignoreNullsExpr: Expression) extends Declarat
   // Expected input data type.
   override def inputTypes: Seq[AbstractDataType] = Seq(AnyDataType)
 
-  private val last = AttributeReference("last", child.dataType)()
+  private lazy val last = AttributeReference("last", child.dataType)()
 
-  override val aggBufferAttributes: Seq[AttributeReference] = last :: Nil
+  override lazy val aggBufferAttributes: Seq[AttributeReference] = last :: Nil
 
-  override val initialValues: Seq[Literal] = Seq(
+  override lazy val initialValues: Seq[Literal] = Seq(
     /* last = */ Literal.create(null, child.dataType)
   )
 
-  override val updateExpressions: Seq[Expression] = {
+  override lazy val updateExpressions: Seq[Expression] = {
     if (ignoreNulls) {
       Seq(
         /* last = */ If(IsNull(child), last, child)
@@ -71,7 +73,7 @@ case class Last(child: Expression, ignoreNullsExpr: Expression) extends Declarat
     }
   }
 
-  override val mergeExpressions: Seq[Expression] = {
+  override lazy val mergeExpressions: Seq[Expression] = {
     if (ignoreNulls) {
       Seq(
         /* last = */ If(IsNull(last.right), last.left, last.right)
@@ -83,7 +85,7 @@ case class Last(child: Expression, ignoreNullsExpr: Expression) extends Declarat
     }
   }
 
-  override val evaluateExpression: AttributeReference = last
+  override lazy val evaluateExpression: AttributeReference = last
 
   override def toString: String = s"last($child)${if (ignoreNulls) " ignore nulls"}"
 }

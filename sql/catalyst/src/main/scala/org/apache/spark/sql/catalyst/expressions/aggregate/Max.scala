@@ -17,9 +17,13 @@
 
 package org.apache.spark.sql.catalyst.expressions.aggregate
 
+import org.apache.spark.sql.catalyst.analysis.TypeCheckResult
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.types._
 
+@ExpressionDescription(
+  usage = "_FUNC_(expr) - Returns the maximum value of expr.")
 case class Max(child: Expression) extends DeclarativeAggregate {
 
   override def children: Seq[Expression] = child :: Nil
@@ -32,24 +36,26 @@ case class Max(child: Expression) extends DeclarativeAggregate {
   // Expected input data type.
   override def inputTypes: Seq[AbstractDataType] = Seq(AnyDataType)
 
-  private val max = AttributeReference("max", child.dataType)()
+  override def checkInputDataTypes(): TypeCheckResult =
+    TypeUtils.checkForOrderingExpr(child.dataType, "function max")
 
-  override val aggBufferAttributes: Seq[AttributeReference] = max :: Nil
+  private lazy val max = AttributeReference("max", child.dataType)()
 
-  override val initialValues: Seq[Literal] = Seq(
+  override lazy val aggBufferAttributes: Seq[AttributeReference] = max :: Nil
+
+  override lazy val initialValues: Seq[Literal] = Seq(
     /* max = */ Literal.create(null, child.dataType)
   )
 
-  override val updateExpressions: Seq[Expression] = Seq(
-    /* max = */ If(IsNull(child), max, If(IsNull(max), child, Greatest(Seq(max, child))))
+  override lazy val updateExpressions: Seq[Expression] = Seq(
+    /* max = */ Greatest(Seq(max, child))
   )
 
-  override val mergeExpressions: Seq[Expression] = {
-    val greatest = Greatest(Seq(max.left, max.right))
+  override lazy val mergeExpressions: Seq[Expression] = {
     Seq(
-      /* max = */ If(IsNull(max.right), max.left, If(IsNull(max.left), max.right, greatest))
+      /* max = */ Greatest(Seq(max.left, max.right))
     )
   }
 
-  override val evaluateExpression: AttributeReference = max
+  override lazy val evaluateExpression: AttributeReference = max
 }

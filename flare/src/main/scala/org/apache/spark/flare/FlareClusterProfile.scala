@@ -3,7 +3,8 @@ package org.apache.spark.flare
 import org.apache.curator.framework.recipes.barriers.DistributedBarrier
 import org.apache.curator.framework.recipes.leader.{LeaderLatch, LeaderLatchListener}
 import org.apache.spark.executor.flare.FlarePoolBackend
-import org.apache.spark.{Logging, SparkException}
+import org.apache.spark.SparkException
+import org.apache.spark.internal.Logging
 import org.apache.zookeeper.CreateMode
 import org.apache.spark.util.SerializerUtils._
 

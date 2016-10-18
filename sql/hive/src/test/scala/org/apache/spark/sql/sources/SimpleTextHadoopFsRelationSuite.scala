@@ -18,16 +18,12 @@
 package org.apache.spark.sql.sources
 
 import org.apache.hadoop.fs.Path
+
 import org.apache.spark.deploy.SparkHadoopUtil
-import org.apache.spark.sql.Row
-import org.apache.spark.sql.catalyst.CatalystTypeConverters
-import org.apache.spark.sql.execution.PhysicalRDD
-import org.apache.spark.sql.functions._
+import org.apache.spark.sql.catalyst.expressions.PredicateHelper
 import org.apache.spark.sql.types._
 
-class SimpleTextHadoopFsRelationSuite extends HadoopFsRelationTest {
-  import testImplicits._
-
+class SimpleTextHadoopFsRelationSuite extends HadoopFsRelationTest with PredicateHelper {
   override val dataSourceName: String = classOf[SimpleTextSource].getCanonicalName
 
   // We have a very limited number of supported types at here since it is just for a
@@ -70,43 +66,26 @@ class SimpleTextHadoopFsRelationSuite extends HadoopFsRelationTest {
     }
   }
 
-  private val writer = testDF.write.option("dataSchema", dataSchema.json).format(dataSourceName)
-  private val reader = sqlContext.read.option("dataSchema", dataSchema.json).format(dataSourceName)
+  test("test hadoop conf option propagation") {
+    withTempPath { file =>
+      // Test write side
+      val df = sqlContext.range(10).selectExpr("cast(id as string)")
+      df.write
+        .option("some-random-write-option", "hahah-WRITE")
+        .option("some-null-value-option", null)  // test null robustness
+        .option("dataSchema", df.schema.json)
+        .format(dataSourceName).save(file.getAbsolutePath)
+      assert(SimpleTextRelation.lastHadoopConf.get.get("some-random-write-option") == "hahah-WRITE")
 
-  test("unhandledFilters") {
-    withTempPath { dir =>
-
-      val path = dir.getCanonicalPath
-      writer.save(s"$path/p=0")
-      writer.save(s"$path/p=1")
-
-      val isOdd = udf((_: Int) % 2 == 1)
-      val df = reader.load(path)
-        .filter(
-          // This filter is inconvertible
-          isOdd('a) &&
-            // This filter is convertible but unhandled
-            'a > 1 &&
-            // This filter is convertible and handled
-            'b > "val_1" &&
-            // This filter references a partiiton column, won't be pushed down
-            'p === 1
-        ).select('a, 'p)
-      val rawScan = df.queryExecution.executedPlan collect {
-        case p: PhysicalRDD => p
-      } match {
-        case Seq(p) => p
-      }
-
-      val outputSchema = new StructType().add("a", IntegerType).add("p", IntegerType)
-
-      assertResult(Set((2, 1), (3, 1))) {
-        rawScan.execute().collect()
-          .map { CatalystTypeConverters.convertToScala(_, outputSchema) }
-          .map { case Row(a, p) => (a, p) }.toSet
-      }
-
-      checkAnswer(df, Row(3, 1))
+      // Test read side
+      val df1 = sqlContext.read
+        .option("some-random-read-option", "hahah-READ")
+        .option("some-null-value-option", null)  // test null robustness
+        .option("dataSchema", df.schema.json)
+        .format(dataSourceName)
+        .load(file.getAbsolutePath)
+      df1.count()
+      assert(SimpleTextRelation.lastHadoopConf.get.get("some-random-read-option") == "hahah-READ")
     }
   }
 }

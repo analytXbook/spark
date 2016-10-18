@@ -3,7 +3,7 @@ package org.apache.spark.flare
 import java.util.concurrent.atomic.AtomicLong
 
 import org.apache.curator.framework.recipes.atomic.{AtomicValue, DistributedAtomicLong}
-import org.apache.spark.Logging
+import org.apache.spark.internal.Logging
 import org.apache.spark.util.ThreadUtils
 
 class FlareCounter(name: String, atomicValue: DistributedAtomicLong) extends Logging{

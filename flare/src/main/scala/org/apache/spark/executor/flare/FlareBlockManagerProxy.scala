@@ -4,7 +4,8 @@ import org.apache.spark.flare.FlareCluster
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv}
 import org.apache.spark.storage.BlockManagerMessages._
 import org.apache.spark.storage._
-import org.apache.spark.{Logging, SparkException}
+import org.apache.spark.internal.Logging
+import org.apache.spark.SparkException
 
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
@@ -51,8 +52,7 @@ private[spark] class FlareBlockManagerProxy(
     }
     
     case _updateBlockInfo @ UpdateBlockInfo(
-      blockManagerId, blockId, storageLevel, deserializedSize, size, externalBlockStoreSize) => {
-      
+      blockManagerId, blockId, storageLevel, deserializedSize, size) => {
       driverRefs.get(driverIdFromBlockId(blockId)).map(driverRef => pipe(_updateBlockInfo, driverRef, context))        
     }
       

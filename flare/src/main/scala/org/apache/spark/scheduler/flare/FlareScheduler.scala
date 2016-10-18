@@ -11,6 +11,7 @@ import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.scheduler._
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.{EncodedId, LongIdGenerator}
+import org.apache.spark.internal.Logging
 
 import scala.collection.mutable.{ArrayBuffer, HashMap}
 
@@ -210,21 +211,25 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   }
   
   override def defaultParallelism(): Int = backend.defaultParallelism()
-  
-  override def executorHeartbeatReceived(
-      executorId: String, 
-      taskMetrics: Array[(Long, TaskMetrics)],
-      blockManagerId: BlockManagerId): Boolean = {
-    
-    val metricsWithStageIds: Array[(Long, Int, Int, TaskMetrics)] = synchronized {
-      taskMetrics.flatMap { case (id, metrics) =>
+
+  override def executorHeartbeatReceived(execId: String,
+                                         accumUpdates: Array[(Long, Seq[NewAccumulator[_, _]])],
+                                         blockManagerId: BlockManagerId): Boolean = {
+    // (taskId, stageId, stageAttemptId, accumUpdates)
+    val accumUpdatesWithTaskIds: Array[(Long, Int, Int, Seq[AccumulableInfo])] = synchronized {
+      accumUpdates.flatMap { case (id, updates) =>
+        // We should call `acc.value` here as we are at driver side now.  However, the RPC framework
+        // optimizes local message delivery so that messages do not need to de serialized and
+        // deserialized.  This brings trouble to the accumulator framework, which depends on
+        // serialization to set the `atDriverSide` flag.  Here we call `acc.localValue` instead to
+        // be more robust about this issue.
+        val accInfos = updates.map(acc => acc.toInfo(Some(acc.localValue), None))
         taskIdToReservationManager.get(id).map { reservationManager =>
-          (id, reservationManager.taskSet.stageId, reservationManager.taskSet.stageAttemptId, metrics)
+          (id, reservationManager.taskSet.stageId, reservationManager.taskSet.stageAttemptId, accInfos)
         }
       }
     }
-    
-    dagScheduler.executorHeartbeatReceived(executorId, metricsWithStageIds, blockManagerId)
+    dagScheduler.executorHeartbeatReceived(execId, accumUpdatesWithTaskIds, blockManagerId)
   }
   
   override def executorLost(executorId: String, reason: ExecutorLossReason): Unit = {

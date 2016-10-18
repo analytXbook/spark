@@ -1,6 +1,6 @@
 package org.apache.spark.executor.flare
 
-import org.apache.spark.Logging
+import org.apache.spark.internal.Logging
 import org.apache.spark.flare.{DriverData, FlareCluster}
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv}
 import org.apache.spark.scheduler.flare.FlareMessages._

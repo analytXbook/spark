@@ -1,6 +1,7 @@
 package org.apache.spark.executor.flare
 
-import org.apache.spark.{GetMapOutputStatuses, Logging, MapOutputTracker}
+import org.apache.spark.{GetMapOutputStatuses, MapOutputTracker}
+import org.apache.spark.internal.Logging
 import org.apache.spark.flare.FlareCluster
 import org.apache.spark.rpc.{RpcCallContext, RpcEnv}
 

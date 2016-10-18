@@ -15,7 +15,8 @@ import org.apache.spark.scheduler.flare.FlareMessages._
 import org.apache.spark.scheduler.flare._
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.storage.BlockManagerMaster
-import org.apache.spark.util.{ShutdownHookManager, SignalLogger, ThreadUtils}
+import org.apache.spark.util.{SignalUtils, ShutdownHookManager, ThreadUtils}
+import org.apache.spark.internal.Logging
 
 import scala.collection.mutable
 import scala.collection.mutable.{HashMap, MultiMap, Set}
@@ -224,7 +225,7 @@ private[spark] object FlareExecutorBackend extends Logging {
     clusterConf: FlareClusterConfiguration,
     redisConf: RedisFlarePoolBackendConfiguration) {
     
-    SignalLogger.register(log)
+    SignalUtils.registerLogger(log)
 
     SparkHadoopUtil.get.runAsSparkUser { () =>
       cluster = FlareCluster(clusterConf)
@@ -254,7 +255,7 @@ private[spark] object FlareExecutorBackend extends Logging {
 
       val env = SparkEnv.createExecutorEnv(executorConf, executorId, clusterConf.hostname, EXECUTOR_PORT, cores, isLocal = false)
      
-      val driverRef = env.rpcEnv.setupEndpointRef("sparkDriver", proxyRpcEnv.address, FlareSchedulerBackend.ENDPOINT_NAME)
+      val driverRef = env.rpcEnv.setupEndpointRef(proxyRpcEnv.address, FlareSchedulerBackend.ENDPOINT_NAME)
 
       val userClassPath = List.empty[URL]
 

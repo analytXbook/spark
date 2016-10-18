@@ -1,16 +1,24 @@
 package org.apache.spark.deploy.flare
 
-import java.io.File
+
+import java.io._
+import java.nio.charset.StandardCharsets
 
 import scala.collection.JavaConverters._
-import com.google.common.base.Charsets.UTF_8
+
 import com.google.common.io.Files
-import org.apache.spark.{Logging, SecurityManager, SparkConf}
-import org.apache.spark.deploy.{Command, ExecutorState}
-import org.apache.spark.deploy.worker.CommandUtils
-import org.apache.spark.flare.FlareClusterConfiguration
+
+import org.apache.spark.{SecurityManager, SparkConf}
+import org.apache.spark.deploy.{ApplicationDescription, ExecutorState}
+import org.apache.spark.deploy.DeployMessages.ExecutorStateChanged
+import org.apache.spark.internal.Logging
+import org.apache.spark.rpc.RpcEndpointRef
 import org.apache.spark.util.{ShutdownHookManager, Utils}
 import org.apache.spark.util.logging.FileAppender
+import org.apache.spark.deploy.{Command, ExecutorState}
+import org.apache.spark.deploy.worker.CommandUtils
+
+import org.apache.spark.flare.FlareClusterConfiguration
 
 import scala.collection.mutable.HashMap
 
@@ -126,7 +134,7 @@ private[spark] class FlareExecutorRunner(
       stdoutAppender = FileAppender(process.getInputStream, stdout, conf)
             
       val stderr = new File(executorDir, "stderr")
-      Files.write(header, stderr, UTF_8)
+      Files.write(header, stderr, StandardCharsets.UTF_8)
       stderrAppender = FileAppender(process.getErrorStream, stderr, conf)
       
       val exitCode = process.waitFor()
