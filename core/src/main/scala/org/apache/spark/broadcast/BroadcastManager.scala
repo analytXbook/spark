@@ -19,6 +19,8 @@ package org.apache.spark.broadcast
 
 import java.util.concurrent.atomic.AtomicLong
 
+import org.apache.spark.util.LongIdGenerator
+
 import scala.reflect.ClassTag
 
 import org.apache.spark.{SecurityManager, SparkConf}
@@ -50,10 +52,10 @@ private[spark] class BroadcastManager(
     broadcastFactory.stop()
   }
 
-  private val nextBroadcastId = new AtomicLong(0)
+  private val nextBroadcastId = LongIdGenerator(conf)
 
   def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean): Broadcast[T] = {
-    broadcastFactory.newBroadcast[T](value_, isLocal, nextBroadcastId.getAndIncrement())
+    broadcastFactory.newBroadcast[T](value_, isLocal, nextBroadcastId.next())
   }
 
   def unbroadcast(id: Long, removeFromDriver: Boolean, blocking: Boolean) {
