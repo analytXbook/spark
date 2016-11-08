@@ -36,8 +36,8 @@ local fair_comparator = function(p1, p2)
 	local p1_active_tasks = (p1.running_tasks or 0) + (p1.pending_tasks or 0)
 	local p2_active_tasks = (p2.running_tasks or 0) + (p2.pending_tasks or 0)
 
-	local p1_maxed = p1.max_share ~= nil and (p1.max_share > p1_active_tasks)
-	local p2_maxed = p2.max_share ~= nil and (p2.max_share > p2_active_tasks)
+	local p1_maxed = p1.max_share ~= nil and (p1_active_tasks >= p1.max_share)
+	local p2_maxed = p2.max_share ~= nil and (p2_active_tasks >= p2.max_share)
 	
 	if p1_maxed and p2_maxed then
 		return p1.name < p2.name
