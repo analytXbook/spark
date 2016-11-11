@@ -152,7 +152,8 @@ private[sql] object Dataset {
  *
  * @since 1.6.0
  */
-class Dataset[T] private[sql](
+// TODO add private[sql] back to this class
+class Dataset[T] (
     @transient val sparkSession: SparkSession,
     @DeveloperApi @transient val queryExecution: QueryExecution,
     encoder: Encoder[T])
