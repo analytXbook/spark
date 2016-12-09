@@ -8,10 +8,10 @@ import org.apache.spark.TaskState.TaskState
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.scheduler._
 import org.apache.spark.util.{Clock, SystemClock, Utils}
-import org.apache.spark._
+import org.apache.spark.{NewAccumulator, _}
 import org.apache.spark.internal.Logging
 
-import scala.collection.mutable.{HashMap, HashSet, ArrayBuffer, MultiMap, Set, ListBuffer}
+import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, ListBuffer, MultiMap, Set}
 import scala.collection.mutable
 import scala.util.Random
 import scala.util.control.NonFatal
@@ -265,8 +265,7 @@ private[spark] class FlareReservationManager(
     removeRunningTask(taskId)
     taskInfo.markFailed()
 
-    var taskMetrics: TaskMetrics = null
-
+    var accumUpdates: Seq[NewAccumulator[_, _]] = Seq.empty
     val failureReason = s"Lost task ${taskInfo.id} in stage ${taskSet.id} (TID $taskId, ${taskInfo.host}): " +
       reason.asInstanceOf[TaskFailedReason].toErrorString
 
@@ -281,6 +280,7 @@ private[spark] class FlareReservationManager(
         isZombie = true
         None
       case ef: ExceptionFailure =>
+        accumUpdates = ef.accums
         if (ef.className == classOf[NotSerializableException].getName) {
           // If the task result wasn't serializable, there's no point in trying to re-execute it.
           logError("Task %s in stage %s (TID %d) had a not serializable result: %s; not retrying"
@@ -332,7 +332,7 @@ private[spark] class FlareReservationManager(
 
     failedExecutors.getOrElseUpdate(index, new HashMap[String, Long]()).put(taskInfo.executorId, clock.getTimeMillis())
 
-    scheduler.dagScheduler.taskEnded(tasks(index), reason, null, null, taskInfo)
+    scheduler.dagScheduler.taskEnded(tasks(index), reason, null, accumUpdates, taskInfo)
 
     if (!isZombie && state != TaskState.KILLED
       && reason.isInstanceOf[TaskFailedReason]
