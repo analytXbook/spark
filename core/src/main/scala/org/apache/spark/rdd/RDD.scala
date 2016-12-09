@@ -245,11 +245,10 @@ abstract class RDD[T: ClassTag](
     checkpointRDD.map(_.partitions).getOrElse {
       if (partitions_ == null) {
         partitions_ = getPartitions
-        // TODO put this require back after fixing mapped partitions
-        /* partitions_.zipWithIndex.foreach { case (partition, index) =>
+        partitions_.zipWithIndex.foreach { case (partition, index) =>
           require(partition.index == index,
             s"partitions($index).partition == ${partition.index}, but it should equal $index")
-        } */
+        }
       }
       partitions_
     }
