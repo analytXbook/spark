@@ -2,6 +2,7 @@ package org.apache.spark.scheduler.flare
 
 import java.nio.ByteBuffer
 import java.util.Properties
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 import org.apache.spark.TaskState.TaskState
@@ -10,7 +11,7 @@ import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.scheduler._
 import org.apache.spark.storage.BlockManagerId
-import org.apache.spark.util.{EncodedId, LongIdGenerator}
+import org.apache.spark.util.{EncodedId, LongIdGenerator, ThreadUtils, Utils}
 import org.apache.spark.internal.Logging
 
 import scala.collection.mutable.{ArrayBuffer, HashMap}
@@ -19,12 +20,14 @@ import scala.collection.mutable.{ArrayBuffer, HashMap}
 private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler with Logging {
   val conf = sc.conf
 
+  val CHECK_LOCALITY_WAIT_INTERVAL = conf.getTimeAsMs("spark.locality.wait.interval", "100ms")
+
   var dagScheduler: DAGScheduler = _
   var backend: FlareSchedulerBackend = _
   
   val cpusPerTask = conf.getInt("spark.task.cpus", 1)
   val maxTaskFailures = conf.getInt("spark.task.maxFailures", 4)
-  
+
   val managersByStageIdAndAttempt = new HashMap[Int, HashMap[Int, FlareReservationManager]]
   
   val taskIdGenerator = LongIdGenerator(sc)
@@ -34,13 +37,16 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   val mapOutputTracker = SparkEnv.get.mapOutputTracker
  
   var taskResultGetter = new FlareTaskResultGetter(sc.env, this)
-  
+
   val taskIdToReservationManager = new HashMap[Long, FlareReservationManager]
   val taskIdToExecutorId = new HashMap[Long, String]
 
   val executors = new ArrayBuffer[String]
   val executorsByHost = new HashMap[String, ArrayBuffer[String]]
-  
+
+  private val localityWaitScheduler =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("task-locality-wait-scheduler")
+
   override def setDAGScheduler(dagScheduler: DAGScheduler): Unit = {
     this.dagScheduler = dagScheduler
   }
@@ -61,6 +67,12 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   }
   override def start() = {
     backend.start()
+
+    localityWaitScheduler.scheduleAtFixedRate(new Runnable {
+      override def run() = Utils.tryOrStopSparkContext(sc) {
+        checkLocalityWaitReservations()
+      }
+    }, CHECK_LOCALITY_WAIT_INTERVAL, CHECK_LOCALITY_WAIT_INTERVAL, TimeUnit.MILLISECONDS)
     
     backend.executors.foreach {
       case (executorId, executor) => {
@@ -209,6 +221,21 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
     backend.cancelReservations(taskSet.stageId, taskSet.stageAttemptId, executors)
     managersByStageIdAndAttempt.get(taskSet.stageId).flatMap(_.remove(taskSet.stageAttemptId))
   }
+
+  def checkLocalityWaitReservations() = synchronized {
+    managersByStageIdAndAttempt.foreach {
+      case (stageId, attempts) => {
+        attempts.foreach {
+          case (stageAttemptId, manager) => {
+            val reservations = manager.checkLocalityTimeout()
+            if (!reservations.isEmpty) {
+              backend.placeReservations(stageId, stageAttemptId, reservations, manager.reservationGroups)
+            }
+          }
+        }
+      }
+    }
+  }
   
   override def defaultParallelism(): Int = backend.defaultParallelism()
 
@@ -241,6 +268,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   }
   
   override def stop(): Unit = {
+    localityWaitScheduler.shutdown()
     if (backend != null) {
       backend.stop()
     }
