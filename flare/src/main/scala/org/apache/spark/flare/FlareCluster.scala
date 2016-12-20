@@ -14,10 +14,10 @@ import org.apache.spark.util.SerializerUtils._
 import scala.reflect.ClassTag
 
 class FlareCluster(conf: FlareClusterConfiguration) extends Logging{
-  private val ZK_CONNECTION_TIMEOUT_MILLIS = 15000
-  private val ZK_SESSION_TIMEOUT_MILLIS = 60000
+  private val ZK_CONNECTION_TIMEOUT_MILLIS = 15000 * 4
+  private val ZK_SESSION_TIMEOUT_MILLIS = 60000 * 4
   private val RETRY_WAIT_MILLIS = 5000
-  private val MAX_RECONNECT_ATTEMPTS = 3
+  private val MAX_RECONNECT_ATTEMPTS = 10 // 3
 
   val zk = CuratorFrameworkFactory.builder()
     .connectString(conf.zkUrl)
