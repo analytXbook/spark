@@ -44,8 +44,8 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   val executors = new ArrayBuffer[String]
   val executorsByHost = new HashMap[String, ArrayBuffer[String]]
 
-  private val localityWaitScheduler =
-    ThreadUtils.newDaemonSingleThreadScheduledExecutor("task-locality-wait-scheduler")
+  // private val localityWaitScheduler =
+  //  ThreadUtils.newDaemonSingleThreadScheduledExecutor("task-locality-wait-scheduler")
 
   override def setDAGScheduler(dagScheduler: DAGScheduler): Unit = {
     this.dagScheduler = dagScheduler
@@ -68,11 +68,11 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   override def start() = {
     backend.start()
 
-    localityWaitScheduler.scheduleAtFixedRate(new Runnable {
+    /* localityWaitScheduler.scheduleAtFixedRate(new Runnable {
       override def run() = Utils.tryOrStopSparkContext(sc) {
         checkLocalityWaitReservations()
       }
-    }, CHECK_LOCALITY_WAIT_INTERVAL, CHECK_LOCALITY_WAIT_INTERVAL, TimeUnit.MILLISECONDS)
+    }, CHECK_LOCALITY_WAIT_INTERVAL, CHECK_LOCALITY_WAIT_INTERVAL, TimeUnit.MILLISECONDS) */
     
     backend.executors.foreach {
       case (executorId, executor) => {
@@ -268,7 +268,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   }
   
   override def stop(): Unit = {
-    localityWaitScheduler.shutdown()
+    // localityWaitScheduler.shutdown()
     if (backend != null) {
       backend.stop()
     }
