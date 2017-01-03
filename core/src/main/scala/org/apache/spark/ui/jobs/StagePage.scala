@@ -26,7 +26,7 @@ import scala.xml.{Elem, Node, Unparsed}
 
 import org.apache.commons.lang3.StringEscapeUtils
 
-import org.apache.spark.{InternalAccumulator, SparkConf}
+import org.apache.spark.SparkConf
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.scheduler.{AccumulableInfo, TaskInfo, TaskLocality}
 import org.apache.spark.ui._
@@ -131,7 +131,14 @@ private[ui] class StagePage(parent: StagesTab) extends WebUIPage("stage") {
 
       val stageData = stageDataOption.get
       val tasks = stageData.taskData.values.toSeq.sortBy(_.taskInfo.launchTime)
-      val numCompleted = tasks.count(_.taskInfo.finished)
+      val numCompleted = stageData.numCompleteTasks
+      val totalTasks = stageData.numActiveTasks +
+        stageData.numCompleteTasks + stageData.numFailedTasks
+      val totalTasksNumStr = if (totalTasks == tasks.size) {
+        s"$totalTasks"
+      } else {
+        s"$totalTasks, showing ${tasks.size}"
+      }
 
       val allAccumulables = progressListener.stageIdToData((stageId, stageAttemptId)).accumulables
       val externalAccumulables = allAccumulables.values.filter { acc => !acc.internal }
@@ -576,7 +583,8 @@ private[ui] class StagePage(parent: StagesTab) extends WebUIPage("stage") {
         <div>{summaryTable.getOrElse("No tasks have reported metrics yet.")}</div> ++
         <h4>Aggregated Metrics by Executor</h4> ++ executorTable.toNodeSeq ++
         maybeAccumulableTable ++
-        <h4 id="tasks-section">Tasks</h4> ++ taskTableHTML ++ jsForScrollingDownToTaskTable
+        <h4 id="tasks-section">Tasks ({totalTasksNumStr})</h4> ++
+          taskTableHTML ++ jsForScrollingDownToTaskTable
       UIUtils.headerSparkPage(stageHeader, content, parent, showVisualization = true)
     }
   }
@@ -628,9 +636,9 @@ private[ui] class StagePage(parent: StagesTab) extends WebUIPage("stage") {
         }
         val executorComputingTime = executorRunTime - shuffleReadTime - shuffleWriteTime
         val executorComputingTimeProportion =
-          (100 - schedulerDelayProportion - shuffleReadTimeProportion -
+          math.max(100 - schedulerDelayProportion - shuffleReadTimeProportion -
             shuffleWriteTimeProportion - serializationTimeProportion -
-            deserializationTimeProportion - gettingResultTimeProportion)
+            deserializationTimeProportion - gettingResultTimeProportion, 0)
 
         val schedulerDelayProportionPos = 0
         val deserializationTimeProportionPos =
@@ -746,7 +754,8 @@ private[ui] class StagePage(parent: StagesTab) extends WebUIPage("stage") {
     </div> ++
     <script type="text/javascript">
       {Unparsed(s"drawTaskAssignmentTimeline(" +
-      s"$groupArrayStr, $executorsArrayStr, $minLaunchTime, $maxFinishTime)")}
+      s"$groupArrayStr, $executorsArrayStr, $minLaunchTime, $maxFinishTime, " +
+        s"${UIUtils.getTimeZoneOffset()})")}
     </script>
   }
 
@@ -767,7 +776,7 @@ private[ui] object StagePage {
   }
 
   private[ui] def getSchedulerDelay(
-      info: TaskInfo, metrics: TaskMetrics, currentTime: Long): Long = {
+      info: TaskInfo, metrics: TaskMetricsUIData, currentTime: Long): Long = {
     if (info.finished) {
       val totalExecutionTime = info.finishTime - info.launchTime
       val executorOverhead = (metrics.executorDeserializeTime +

@@ -150,7 +150,8 @@ private[hive] case class HiveGenericUDF(
     returnInspector // Make sure initialized.
 
     var i = 0
-    while (i < children.length) {
+    val length = children.length
+    while (i < length) {
       val idx = i
       deferredObjects(i).asInstanceOf[DeferredObjectAdapter]
         .set(() => children(idx).eval(input))
@@ -202,9 +203,10 @@ private[hive] case class HiveGenericUDTF(
   @transient
   protected lazy val collector = new UDTFCollector
 
-  override lazy val elementTypes = outputInspector.getAllStructFieldRefs.asScala.map {
-    field => (inspectorToDataType(field.getFieldObjectInspector), true, field.getFieldName)
-  }
+  override lazy val elementSchema = StructType(outputInspector.getAllStructFieldRefs.asScala.map {
+    field => StructField(field.getFieldName, inspectorToDataType(field.getFieldObjectInspector),
+      nullable = true)
+  })
 
   @transient
   private lazy val inputDataTypes: Array[DataType] = children.map(_.dataType).toArray

@@ -24,7 +24,7 @@ import scala.util.control.NonFatal
 
 import org.apache.commons.lang3.StringUtils
 
-import org.apache.spark.{Partition, SparkContext, TaskContext}
+import org.apache.spark.{Partition, SparkContext, TaskContext, TaskKilledException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -38,11 +38,11 @@ import org.apache.spark.unsafe.types.UTF8String
 /**
  * Data corresponding to one partition of a JDBCRDD.
  */
-private[sql] case class JDBCPartition(whereClause: String, idx: Int) extends Partition {
+case class JDBCPartition(whereClause: String, idx: Int) extends Partition {
   override def index: Int = idx
 }
 
-private[sql] object JDBCRDD extends Logging {
+object JDBCRDD extends Logging {
 
   /**
    * Maps a JDBC type to a Catalyst type.  This function is called only when
@@ -136,7 +136,16 @@ private[sql] object JDBCRDD extends Logging {
             val typeName = rsmd.getColumnTypeName(i + 1)
             val fieldSize = rsmd.getPrecision(i + 1)
             val fieldScale = rsmd.getScale(i + 1)
-            val isSigned = rsmd.isSigned(i + 1)
+            val isSigned = {
+              try {
+                rsmd.isSigned(i + 1)
+              } catch {
+                // Workaround for HIVE-14684:
+                case e: SQLException if
+                  e.getMessage == "Method not supported" &&
+                  rsmd.getClass.getName == "org.apache.hive.jdbc.HiveResultSetMetaData" => true
+              }
+            }
             val nullable = rsmd.isNullable(i + 1) != ResultSetMetaData.columnNoNulls
             val metadata = new MetadataBuilder()
               .putString("name", columnName)
@@ -192,7 +201,7 @@ private[sql] object JDBCRDD extends Logging {
    * Turns a single Filter into a String representing a SQL expression.
    * Returns None for an unhandled filter.
    */
-  private[jdbc] def compileFilter(f: Filter): Option[String] = {
+  def compileFilter(f: Filter): Option[String] = {
     Option(f match {
       case EqualTo(attr, value) => s"$attr = ${compileValue(value)}"
       case EqualNullSafe(attr, value) =>
@@ -207,6 +216,8 @@ private[sql] object JDBCRDD extends Logging {
       case StringStartsWith(attr, value) => s"${attr} LIKE '${value}%'"
       case StringEndsWith(attr, value) => s"${attr} LIKE '%${value}'"
       case StringContains(attr, value) => s"${attr} LIKE '%${value}%'"
+      case In(attr, value) if value.isEmpty =>
+        s"CASE WHEN ${attr} IS NULL THEN NULL ELSE FALSE END"
       case In(attr, value) => s"$attr IN (${compileValue(value)})"
       case Not(f) => compileFilter(f).map(p => s"(NOT ($p))").getOrElse(null)
       case Or(f1, f2) =>
@@ -275,7 +286,7 @@ private[sql] object JDBCRDD extends Logging {
  * driver code and the workers must be able to access the database; the driver
  * needs to fetch the schema while the workers need to fetch the data.
  */
-private[sql] class JDBCRDD(
+private[jdbc] class JDBCRDD(
     sc: SparkContext,
     getConnection: () => Connection,
     schema: StructType,
@@ -305,14 +316,14 @@ private[sql] class JDBCRDD(
    * `filters`, but as a WHERE clause suitable for injection into a SQL query.
    */
   private val filterWhereClause: String =
-    filters.flatMap(JDBCRDD.compileFilter).mkString(" AND ")
+    filters.flatMap(JDBCRDD.compileFilter).map(p => s"($p)").mkString(" AND ")
 
   /**
    * A WHERE clause representing both `filters`, if any, and the current partition.
    */
   private def getWhereClause(part: JDBCPartition): String = {
     if (part.whereClause != null && filterWhereClause.length > 0) {
-      "WHERE " + filterWhereClause + " AND " + part.whereClause
+      "WHERE " + s"($filterWhereClause)" + " AND " + s"(${part.whereClause})"
     } else if (part.whereClause != null) {
       "WHERE " + part.whereClause
     } else if (filterWhereClause.length > 0) {
@@ -374,6 +385,7 @@ private[sql] class JDBCRDD(
     var nextValue: InternalRow = null
 
     context.addTaskCompletionListener{ context => close() }
+    val inputMetrics = context.taskMetrics().inputMetrics
     val part = thePart.asInstanceOf[JDBCPartition]
     val conn = getConnection()
     val dialect = JdbcDialects.get(url)
@@ -389,7 +401,11 @@ private[sql] class JDBCRDD(
     val sqlText = s"SELECT $columnList FROM $fqTable $myWhereClause"
     val stmt = conn.prepareStatement(sqlText,
         ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)
-    val fetchSize = properties.getProperty("fetchsize", "0").toInt
+    val fetchSize = properties.getProperty(JdbcUtils.JDBC_BATCH_FETCH_SIZE, "0").toInt
+    require(fetchSize >= 0,
+      s"Invalid value `${fetchSize.toString}` for parameter " +
+      s"`${JdbcUtils.JDBC_BATCH_FETCH_SIZE}`. The minimum value is 0. When the value is 0, " +
+      "the JDBC driver ignores the value and does the estimates.")
     stmt.setFetchSize(fetchSize)
     val rs = stmt.executeQuery()
 
@@ -398,6 +414,7 @@ private[sql] class JDBCRDD(
 
     def getNext(): InternalRow = {
       if (rs.next()) {
+        inputMetrics.incRecordsRead(1)
         var i = 0
         while (i < conversions.length) {
           val pos = i + 1
@@ -524,6 +541,13 @@ private[sql] class JDBCRDD(
     }
 
     override def hasNext: Boolean = {
+      // Kill the task in case it has been marked as killed. This logic is from
+      // InterruptibleIterator, but we inline it here instead of wrapping the iterator in order
+      // to avoid performance overhead and to minimize modified code since it's not easy to
+      // wrap this Iterator without re-indenting tons of code.
+      if (context.isInterrupted()) {
+        throw new TaskKilledException
+      }
       if (!finished) {
         if (!gotNext) {
           nextValue = getNext()

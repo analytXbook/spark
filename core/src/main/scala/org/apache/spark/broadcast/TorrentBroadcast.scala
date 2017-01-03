@@ -175,11 +175,15 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
     TorrentBroadcast.synchronized {
       setConf(SparkEnv.get.conf)
       val blockManager = SparkEnv.get.blockManager
-      blockManager.getLocalValues(broadcastId).map(_.data.next()) match {
-        case Some(x) =>
-          releaseLock(broadcastId)
-          x.asInstanceOf[T]
-
+      blockManager.getLocalValues(broadcastId) match {
+        case Some(blockResult) =>
+          if (blockResult.data.hasNext) {
+            val x = blockResult.data.next().asInstanceOf[T]
+            releaseLock(broadcastId)
+            x
+          } else {
+            throw new SparkException(s"Failed to get locally stored broadcast data: $broadcastId")
+          }
         case None =>
           logInfo("Started reading broadcast variable " + id)
           val startTimeMs = System.currentTimeMillis()
@@ -232,7 +236,11 @@ private object TorrentBroadcast extends Logging {
     val out = compressionCodec.map(c => c.compressedOutputStream(cbbos)).getOrElse(cbbos)
     val ser = serializer.newInstance()
     val serOut = ser.serializeStream(out)
-    serOut.writeObject[T](obj).close()
+    Utils.tryWithSafeFinally {
+      serOut.writeObject[T](obj)
+    } {
+      serOut.close()
+    }
     cbbos.toChunkedByteBuffer.getChunks()
   }
 
@@ -246,8 +254,11 @@ private object TorrentBroadcast extends Logging {
     val in: InputStream = compressionCodec.map(c => c.compressedInputStream(is)).getOrElse(is)
     val ser = serializer.newInstance()
     val serIn = ser.deserializeStream(in)
-    val obj = serIn.readObject[T]()
-    serIn.close()
+    val obj = Utils.tryWithSafeFinally {
+      serIn.readObject[T]()
+    } {
+      serIn.close()
+    }
     obj
   }
 

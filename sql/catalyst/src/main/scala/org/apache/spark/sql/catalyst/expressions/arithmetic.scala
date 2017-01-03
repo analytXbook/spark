@@ -57,7 +57,7 @@ case class UnaryMinus(child: Expression) extends UnaryExpression
     }
   }
 
-  override def sql: String = s"(-${child.sql})"
+  override def sql: String = s"(- ${child.sql})"
 }
 
 @ExpressionDescription(
@@ -75,7 +75,7 @@ case class UnaryPositive(child: Expression)
 
   protected override def nullSafeEval(input: Any): Any = input
 
-  override def sql: String = s"(+${child.sql})"
+  override def sql: String = s"(+ ${child.sql})"
 }
 
 /**
@@ -125,7 +125,7 @@ abstract class BinaryArithmetic extends BinaryOperator {
   }
 }
 
-private[sql] object BinaryArithmetic {
+object BinaryArithmetic {
   def unapply(e: BinaryArithmetic): Option[(Expression, Expression)] = Some((e.left, e.right))
 }
 
@@ -213,7 +213,7 @@ case class Multiply(left: Expression, right: Expression)
 case class Divide(left: Expression, right: Expression)
     extends BinaryArithmetic with NullIntolerant {
 
-  override def inputType: AbstractDataType = NumericType
+  override def inputType: AbstractDataType = TypeCollection(DoubleType, DecimalType)
 
   override def symbol: String = "/"
   override def decimalMethod: String = "$div"
@@ -221,7 +221,6 @@ case class Divide(left: Expression, right: Expression)
 
   private lazy val div: (Any, Any) => Any = dataType match {
     case ft: FractionalType => ft.fractional.asInstanceOf[Fractional[Any]].div
-    case it: IntegralType => it.integral.asInstanceOf[Integral[Any]].quot
   }
 
   override def eval(input: InternalRow): Any = {
@@ -310,7 +309,11 @@ case class Remainder(left: Expression, right: Expression)
       if (input1 == null) {
         null
       } else {
-        integral.rem(input1, input2)
+        input1 match {
+          case d: Double => d % input2.asInstanceOf[java.lang.Double]
+          case f: Float => f % input2.asInstanceOf[java.lang.Float]
+          case _ => integral.rem(input1, input2)
+        }
       }
     }
   }
@@ -499,34 +502,35 @@ case class Pmod(left: Expression, right: Expression) extends BinaryArithmetic wi
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
+      val remainder = ctx.freshName("remainder")
       dataType match {
         case dt: DecimalType =>
           val decimalAdd = "$plus"
           s"""
-            ${ctx.javaType(dataType)} r = $eval1.remainder($eval2);
-            if (r.compare(new org.apache.spark.sql.types.Decimal().set(0)) < 0) {
-              ${ev.value} = (r.$decimalAdd($eval2)).remainder($eval2);
+            ${ctx.javaType(dataType)} $remainder = $eval1.remainder($eval2);
+            if ($remainder.compare(new org.apache.spark.sql.types.Decimal().set(0)) < 0) {
+              ${ev.value} = ($remainder.$decimalAdd($eval2)).remainder($eval2);
             } else {
-              ${ev.value} = r;
+              ${ev.value} = $remainder;
             }
           """
         // byte and short are casted into int when add, minus, times or divide
         case ByteType | ShortType =>
           s"""
-            ${ctx.javaType(dataType)} r = (${ctx.javaType(dataType)})($eval1 % $eval2);
-            if (r < 0) {
-              ${ev.value} = (${ctx.javaType(dataType)})((r + $eval2) % $eval2);
+            ${ctx.javaType(dataType)} $remainder = (${ctx.javaType(dataType)})($eval1 % $eval2);
+            if ($remainder < 0) {
+              ${ev.value} = (${ctx.javaType(dataType)})(($remainder + $eval2) % $eval2);
             } else {
-              ${ev.value} = r;
+              ${ev.value} = $remainder;
             }
           """
         case _ =>
           s"""
-            ${ctx.javaType(dataType)} r = $eval1 % $eval2;
-            if (r < 0) {
-              ${ev.value} = (r + $eval2) % $eval2;
+            ${ctx.javaType(dataType)} $remainder = $eval1 % $eval2;
+            if ($remainder < 0) {
+              ${ev.value} = ($remainder + $eval2) % $eval2;
             } else {
-              ${ev.value} = r;
+              ${ev.value} = $remainder;
             }
           """
       }

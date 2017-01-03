@@ -28,10 +28,10 @@ import org.apache.spark.internal.Logging
 
 private[spark] object SparkCuratorUtil extends Logging {
 
-  private val ZK_CONNECTION_TIMEOUT_MILLIS = 15000 * 4
-  private val ZK_SESSION_TIMEOUT_MILLIS = 60000 * 4
+  private val ZK_CONNECTION_TIMEOUT_MILLIS = 15000
+  private val ZK_SESSION_TIMEOUT_MILLIS = 60000
   private val RETRY_WAIT_MILLIS = 5000
-  private val MAX_RECONNECT_ATTEMPTS = 10 // 3
+  private val MAX_RECONNECT_ATTEMPTS = 3
 
   def newClient(
       conf: SparkConf,

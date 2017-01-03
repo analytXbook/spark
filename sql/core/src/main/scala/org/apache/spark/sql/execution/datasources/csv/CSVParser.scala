@@ -20,7 +20,7 @@ package org.apache.spark.sql.execution.datasources.csv
 import java.io.{ByteArrayOutputStream, OutputStreamWriter, StringReader}
 import java.nio.charset.StandardCharsets
 
-import com.univocity.parsers.csv.{CsvParser, CsvParserSettings, CsvWriter, CsvWriterSettings}
+import com.univocity.parsers.csv._
 
 import org.apache.spark.internal.Logging
 
@@ -30,7 +30,7 @@ import org.apache.spark.internal.Logging
  * @param params Parameters object
  * @param headers headers for the columns
  */
-private[sql] abstract class CsvReader(params: CSVOptions, headers: Seq[String]) {
+private[csv] abstract class CsvReader(params: CSVOptions, headers: Seq[String]) {
 
   protected lazy val parser: CsvParser = {
     val settings = new CsvParserSettings()
@@ -47,7 +47,7 @@ private[sql] abstract class CsvReader(params: CSVOptions, headers: Seq[String]) 
     settings.setMaxColumns(params.maxColumns)
     settings.setNullValue(params.nullValue)
     settings.setMaxCharsPerColumn(params.maxCharsPerColumn)
-    settings.setParseUnescapedQuotesUntilDelimiter(true)
+    settings.setUnescapedQuoteHandling(UnescapedQuoteHandling.STOP_AT_DELIMITER)
     if (headers != null) settings.setHeaders(headers: _*)
 
     new CsvParser(settings)
@@ -60,7 +60,7 @@ private[sql] abstract class CsvReader(params: CSVOptions, headers: Seq[String]) 
  * @param params Parameters object for configuration
  * @param headers headers for columns
  */
-private[sql] class LineCsvWriter(params: CSVOptions, headers: Seq[String]) extends Logging {
+private[csv] class LineCsvWriter(params: CSVOptions, headers: Seq[String]) extends Logging {
   private val writerSettings = new CsvWriterSettings
   private val format = writerSettings.getFormat
 
@@ -73,20 +73,30 @@ private[sql] class LineCsvWriter(params: CSVOptions, headers: Seq[String]) exten
   writerSettings.setNullValue(params.nullValue)
   writerSettings.setEmptyValue(params.nullValue)
   writerSettings.setSkipEmptyLines(true)
-  writerSettings.setQuoteAllFields(false)
+  writerSettings.setQuoteAllFields(params.quoteAll)
   writerSettings.setHeaders(headers: _*)
+  writerSettings.setQuoteEscapingEnabled(params.escapeQuotes)
 
-  def writeRow(row: Seq[String], includeHeader: Boolean): String = {
-    val buffer = new ByteArrayOutputStream()
-    val outputWriter = new OutputStreamWriter(buffer, StandardCharsets.UTF_8)
-    val writer = new CsvWriter(outputWriter, writerSettings)
+  private var buffer = new ByteArrayOutputStream()
+  private var writer = new CsvWriter(
+    new OutputStreamWriter(buffer, StandardCharsets.UTF_8),
+    writerSettings)
 
+  def writeRow(row: Seq[String], includeHeader: Boolean): Unit = {
     if (includeHeader) {
       writer.writeHeaders()
     }
     writer.writeRow(row.toArray: _*)
+  }
+
+  def flush(): String = {
     writer.close()
-    buffer.toString.stripLineEnd
+    val lines = buffer.toString.stripLineEnd
+    buffer = new ByteArrayOutputStream()
+    writer = new CsvWriter(
+      new OutputStreamWriter(buffer, StandardCharsets.UTF_8),
+      writerSettings)
+    lines
   }
 }
 

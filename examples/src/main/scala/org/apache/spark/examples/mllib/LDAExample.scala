@@ -24,10 +24,11 @@ import scopt.OptionParser
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.feature.{CountVectorizer, CountVectorizerModel, RegexTokenizer, StopWordsRemover}
+import org.apache.spark.ml.linalg.{Vector => MLVector}
 import org.apache.spark.mllib.clustering.{DistributedLDAModel, EMLDAOptimizer, LDA, OnlineLDAOptimizer}
-import org.apache.spark.mllib.linalg.Vector
+import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{Row, SQLContext}
+import org.apache.spark.sql.{Row, SparkSession}
 
 /**
  * An example Latent Dirichlet Allocation (LDA) app. Run with
@@ -189,8 +190,11 @@ object LDAExample {
       vocabSize: Int,
       stopwordFile: String): (RDD[(Long, Vector)], Array[String], Long) = {
 
-    val sqlContext = SQLContext.getOrCreate(sc)
-    import sqlContext.implicits._
+    val spark = SparkSession
+      .builder
+      .sparkContext(sc)
+      .getOrCreate()
+    import spark.implicits._
 
     // Get dataset of document texts
     // One document per line in each text file. If the input consists of many small files,
@@ -222,7 +226,7 @@ object LDAExample {
     val documents = model.transform(df)
       .select("features")
       .rdd
-      .map { case Row(features: Vector) => features }
+      .map { case Row(features: MLVector) => Vectors.fromML(features) }
       .zipWithIndex()
       .map(_.swap)
 

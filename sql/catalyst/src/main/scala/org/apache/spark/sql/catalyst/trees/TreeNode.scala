@@ -21,8 +21,9 @@ import java.util.UUID
 
 import scala.collection.Map
 import scala.collection.mutable.Stack
+import scala.reflect.ClassTag
 
-import org.apache.commons.lang.ClassUtils
+import org.apache.commons.lang3.ClassUtils
 import org.json4s.JsonAST._
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
@@ -104,7 +105,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    */
   def find(f: BaseType => Boolean): Option[BaseType] = f(this) match {
     case true => Some(this)
-    case false => children.foldLeft(None: Option[BaseType]) { (l, r) => l.orElse(r.find(f)) }
+    case false => children.foldLeft(Option.empty[BaseType]) { (l, r) => l.orElse(r.find(f)) }
   }
 
   /**
@@ -158,14 +159,34 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   }
 
   /**
+   * Returns a Seq containing the leaves in this tree.
+   */
+  def collectLeaves(): Seq[BaseType] = {
+    this.collect { case p if p.children.isEmpty => p }
+  }
+
+  /**
    * Finds and returns the first [[TreeNode]] of the tree for which the given partial function
    * is defined (pre-order), and applies the partial function to it.
    */
   def collectFirst[B](pf: PartialFunction[BaseType, B]): Option[B] = {
     val lifted = pf.lift
     lifted(this).orElse {
-      children.foldLeft(None: Option[B]) { (l, r) => l.orElse(r.collectFirst(pf)) }
+      children.foldLeft(Option.empty[B]) { (l, r) => l.orElse(r.collectFirst(pf)) }
     }
+  }
+
+  /**
+   * Efficient alternative to `productIterator.map(f).toArray`.
+   */
+  protected def mapProductIterator[B: ClassTag](f: Any => B): Array[B] = {
+    val arr = Array.ofDim[B](productArity)
+    var i = 0
+    while (i < arr.length) {
+      arr(i) = f(productElement(i))
+      i += 1
+    }
+    arr
   }
 
   /**
@@ -173,7 +194,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    */
   def mapChildren(f: BaseType => BaseType): BaseType = {
     var changed = false
-    val newArgs = productIterator.map {
+    val newArgs = mapProductIterator {
       case arg: TreeNode[_] if containsChild(arg) =>
         val newChild = f(arg.asInstanceOf[BaseType])
         if (newChild fastEquals arg) {
@@ -184,7 +205,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
         }
       case nonChild: AnyRef => nonChild
       case null => null
-    }.toArray
+    }
     if (changed) makeCopy(newArgs) else this
   }
 
@@ -197,7 +218,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
     var changed = false
     val remainingNewChildren = newChildren.toBuffer
     val remainingOldChildren = children.toBuffer
-    val newArgs = productIterator.map {
+    val newArgs = mapProductIterator {
       case s: StructType => s // Don't convert struct types to some other type of Seq[StructField]
       // Handle Seq[TreeNode] in TreeNode parameters.
       case s: Seq[_] => s.map {
@@ -237,7 +258,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
         }
       case nonChild: AnyRef => nonChild
       case null => null
-    }.toArray
+    }
 
     if (changed) makeCopy(newArgs) else this
   }
@@ -302,7 +323,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
       rule: PartialFunction[BaseType, BaseType],
       nextOperation: (BaseType, PartialFunction[BaseType, BaseType]) => BaseType): BaseType = {
     var changed = false
-    val newArgs = productIterator.map {
+    val newArgs = mapProductIterator {
       case arg: TreeNode[_] if containsChild(arg) =>
         val newChild = nextOperation(arg.asInstanceOf[BaseType], rule)
         if (!(newChild fastEquals arg)) {
@@ -353,7 +374,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
       }
       case nonChild: AnyRef => nonChild
       case null => null
-    }.toArray
+    }
     if (changed) makeCopy(newArgs) else this
   }
 
@@ -424,95 +445,89 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    */
   protected def stringArgs: Iterator[Any] = productIterator
 
+  private lazy val allChildren: Set[TreeNode[_]] = (children ++ innerChildren).toSet[TreeNode[_]]
+
   /** Returns a string representing the arguments to this node, minus any children */
-  def argString: String = productIterator.flatMap {
-    case tn: TreeNode[_] if containsChild(tn) => Nil
-    case tn: TreeNode[_] => s"${tn.simpleString}" :: Nil
-    case seq: Seq[BaseType] if seq.toSet.subsetOf(children.toSet) => Nil
-    case seq: Seq[_] => seq.mkString("[", ",", "]") :: Nil
-    case set: Set[_] => set.mkString("{", ",", "}") :: Nil
+  def argString: String = stringArgs.flatMap {
+    case tn: TreeNode[_] if allChildren.contains(tn) => Nil
+    case Some(tn: TreeNode[_]) if allChildren.contains(tn) => Nil
+    case Some(tn: TreeNode[_]) => tn.simpleString :: Nil
+    case tn: TreeNode[_] => tn.simpleString :: Nil
+    case seq: Seq[Any] if seq.toSet.subsetOf(allChildren.asInstanceOf[Set[Any]]) => Nil
+    case iter: Iterable[_] if iter.isEmpty => Nil
+    case seq: Seq[_] => Utils.truncatedString(seq, "[", ", ", "]") :: Nil
+    case set: Set[_] => Utils.truncatedString(set.toSeq, "{", ", ", "}") :: Nil
+    case array: Array[_] if array.isEmpty => Nil
+    case array: Array[_] => Utils.truncatedString(array, "[", ", ", "]") :: Nil
+    case null => Nil
+    case None => Nil
+    case Some(null) => Nil
+    case Some(any) => any :: Nil
     case other => other :: Nil
   }.mkString(", ")
 
-  /** String representation of this node without any children. */
+  /** ONE line description of this node. */
   def simpleString: String = s"$nodeName $argString".trim
+
+  /** ONE line description of this node with more information */
+  def verboseString: String
 
   override def toString: String = treeString
 
   /** Returns a string representation of the nodes in this tree */
-  def treeString: String = generateTreeString(0, Nil, new StringBuilder).toString
+  def treeString: String = treeString(verbose = true)
+
+  def treeString(verbose: Boolean): String = {
+    generateTreeString(0, Nil, new StringBuilder, verbose).toString
+  }
 
   /**
    * Returns a string representation of the nodes in this tree, where each operator is numbered.
-   * The numbers can be used with [[trees.TreeNode.apply apply]] to easily access specific subtrees.
+   * The numbers can be used with [[TreeNode.apply]] to easily access specific subtrees.
+   *
+   * The numbers are based on depth-first traversal of the tree (with innerChildren traversed first
+   * before children).
    */
   def numberedTreeString: String =
     treeString.split("\n").zipWithIndex.map { case (line, i) => f"$i%02d $line" }.mkString("\n")
 
   /**
-   * Returns the tree node at the specified number.
+   * Returns the tree node at the specified number, used primarily for interactive debugging.
    * Numbers for each node can be found in the [[numberedTreeString]].
+   *
+   * Note that this cannot return BaseType because logical plan's plan node might return
+   * physical plan for innerChildren, e.g. in-memory relation logical plan node has a reference
+   * to the physical plan node it is referencing.
    */
-  def apply(number: Int): BaseType = getNodeNumbered(new MutableInt(number))
+  def apply(number: Int): TreeNode[_] = getNodeNumbered(new MutableInt(number)).orNull
 
-  protected def getNodeNumbered(number: MutableInt): BaseType = {
+  /**
+   * Returns the tree node at the specified number, used primarily for interactive debugging.
+   * Numbers for each node can be found in the [[numberedTreeString]].
+   *
+   * This is a variant of [[apply]] that returns the node as BaseType (if the type matches).
+   */
+  def p(number: Int): BaseType = apply(number).asInstanceOf[BaseType]
+
+  private def getNodeNumbered(number: MutableInt): Option[TreeNode[_]] = {
     if (number.i < 0) {
-      null.asInstanceOf[BaseType]
+      None
     } else if (number.i == 0) {
-      this
+      Some(this)
     } else {
       number.i -= 1
-      children.map(_.getNodeNumbered(number)).find(_ != null).getOrElse(null.asInstanceOf[BaseType])
+      // Note that this traversal order must be the same as numberedTreeString.
+      innerChildren.map(_.getNodeNumbered(number)).find(_ != None).getOrElse {
+        children.map(_.getNodeNumbered(number)).find(_ != None).flatten
+      }
     }
   }
 
   /**
-   * All the nodes that will be used to generate tree string.
-   *
-   * For example:
-   *
-   *   WholeStageCodegen
-   *   +-- SortMergeJoin
-   *       |-- InputAdapter
-   *       |   +-- Sort
-   *       +-- InputAdapter
-   *           +-- Sort
-   *
-   * the treeChildren of WholeStageCodegen will be Seq(Sort, Sort), it will generate a tree string
-   * like this:
-   *
-   *   WholeStageCodegen
-   *   : +- SortMergeJoin
-   *   :    :- INPUT
-   *   :    :- INPUT
-   *   :-  Sort
-   *   :-  Sort
+   * All the nodes that should be shown as a inner nested tree of this node.
+   * For example, this can be used to show sub-queries.
    */
-  protected def treeChildren: Seq[BaseType] = children
-
-  /**
-   * All the nodes that are parts of this node.
-   *
-   * For example:
-   *
-   *   WholeStageCodegen
-   *   +- SortMergeJoin
-   *      |-- InputAdapter
-   *      |   +-- Sort
-   *      +-- InputAdapter
-   *          +-- Sort
-   *
-   * the innerChildren of WholeStageCodegen will be Seq(SortMergeJoin), it will generate a tree
-   * string like this:
-   *
-   *   WholeStageCodegen
-   *   : +- SortMergeJoin
-   *   :    :- INPUT
-   *   :    :- INPUT
-   *   :-  Sort
-   *   :-  Sort
-   */
-  protected def innerChildren: Seq[BaseType] = Nil
+  protected def innerChildren: Seq[TreeNode[_]] = Seq.empty
 
   /**
    * Appends the string represent of this node and its children to the given StringBuilder.
@@ -520,31 +535,39 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * The `i`-th element in `lastChildren` indicates whether the ancestor of the current node at
    * depth `i + 1` is the last child of its own parent node.  The depth of the root node is 0, and
    * `lastChildren` for the root node should be empty.
+   *
+   * Note that this traversal (numbering) order must be the same as [[getNodeNumbered]].
    */
   def generateTreeString(
-      depth: Int, lastChildren: Seq[Boolean], builder: StringBuilder): StringBuilder = {
+      depth: Int,
+      lastChildren: Seq[Boolean],
+      builder: StringBuilder,
+      verbose: Boolean,
+      prefix: String = ""): StringBuilder = {
+
     if (depth > 0) {
       lastChildren.init.foreach { isLast =>
-        val prefixFragment = if (isLast) "   " else ":  "
-        builder.append(prefixFragment)
+        builder.append(if (isLast) "   " else ":  ")
       }
-
-      val branch = if (lastChildren.last) "+- " else ":- "
-      builder.append(branch)
+      builder.append(if (lastChildren.last) "+- " else ":- ")
     }
 
-    builder.append(simpleString)
+    builder.append(prefix)
+    builder.append(if (verbose) verboseString else simpleString)
     builder.append("\n")
 
     if (innerChildren.nonEmpty) {
       innerChildren.init.foreach(_.generateTreeString(
-        depth + 2, lastChildren :+ false :+ false, builder))
-      innerChildren.last.generateTreeString(depth + 2, lastChildren :+ false :+ true, builder)
+        depth + 2, lastChildren :+ false :+ false, builder, verbose))
+      innerChildren.last.generateTreeString(
+        depth + 2, lastChildren :+ false :+ true, builder, verbose)
     }
 
-    if (treeChildren.nonEmpty) {
-      treeChildren.init.foreach(_.generateTreeString(depth + 1, lastChildren :+ false, builder))
-      treeChildren.last.generateTreeString(depth + 1, lastChildren :+ true, builder)
+    if (children.nonEmpty) {
+      children.init.foreach(_.generateTreeString(
+        depth + 1, lastChildren :+ false, builder, verbose, prefix))
+      children.last.generateTreeString(
+        depth + 1, lastChildren :+ true, builder, verbose, prefix)
     }
 
     builder
@@ -615,7 +638,9 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
     case s: String => JString(s)
     case u: UUID => JString(u.toString)
     case dt: DataType => dt.jsonValue
-    case m: Metadata => m.jsonValue
+    // SPARK-17356: In usage of mllib, Metadata may store a huge vector of data, transforming
+    // it to JSON may trigger OutOfMemoryError.
+    case m: Metadata => Metadata.empty.jsonValue
     case s: StorageLevel =>
       ("useDisk" -> s.useDisk) ~ ("useMemory" -> s.useMemory) ~ ("useOffHeap" -> s.useOffHeap) ~
         ("deserialized" -> s.deserialized) ~ ("replication" -> s.replication)

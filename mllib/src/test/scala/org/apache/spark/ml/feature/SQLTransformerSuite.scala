@@ -31,18 +31,19 @@ class SQLTransformerSuite
   }
 
   test("transform numeric data") {
-    val original = sqlContext.createDataFrame(
+    val original = spark.createDataFrame(
       Seq((0, 1.0, 3.0), (2, 2.0, 5.0))).toDF("id", "v1", "v2")
     val sqlTrans = new SQLTransformer().setStatement(
       "SELECT *, (v1 + v2) AS v3, (v1 * v2) AS v4 FROM __THIS__")
     val result = sqlTrans.transform(original)
     val resultSchema = sqlTrans.transformSchema(original.schema)
-    val expected = sqlContext.createDataFrame(
+    val expected = spark.createDataFrame(
       Seq((0, 1.0, 3.0, 4.0, 3.0), (2, 2.0, 5.0, 7.0, 10.0)))
       .toDF("id", "v1", "v2", "v3", "v4")
     assert(result.schema.toString == resultSchema.toString)
     assert(resultSchema == expected.schema)
     assert(result.collect().toSeq == expected.collect().toSeq)
+    assert(original.sparkSession.catalog.listTables().count() == 0)
   }
 
   test("read/write") {
@@ -52,7 +53,7 @@ class SQLTransformerSuite
   }
 
   test("transformSchema") {
-    val df = sqlContext.range(10)
+    val df = spark.range(10)
     val outputSchema = new SQLTransformer()
       .setStatement("SELECT id + 1 AS id1 FROM __THIS__")
       .transformSchema(df.schema)

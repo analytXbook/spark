@@ -24,7 +24,7 @@ import org.apache.spark.sql.types._
 /**
  * This is a helper class to generate an append-only vectorized hash map that can act as a 'cache'
  * for extremely fast key-value lookups while evaluating aggregates (and fall back to the
- * `BytesToBytesMap` if a given key isn't found). This is 'codegened' in TungstenAggregate to speed
+ * `BytesToBytesMap` if a given key isn't found). This is 'codegened' in HashAggregate to speed
  * up aggregates w/ key.
  *
  * It is backed by a power-of-2-sized array for index lookups and a columnar batch that stores the
@@ -127,7 +127,7 @@ class VectorizedHashMapGenerator(
        |  public $generatedClassName() {
        |    batch = org.apache.spark.sql.execution.vectorized.ColumnarBatch.allocate(schema,
        |      org.apache.spark.memory.MemoryMode.ON_HEAP, capacity);
-       |    // TODO: Possibly generate this projection in TungstenAggregate directly
+       |    // TODO: Possibly generate this projection in HashAggregate directly
        |    aggregateBufferBatch = org.apache.spark.sql.execution.vectorized.ColumnarBatch.allocate(
        |      aggregateBufferSchema, org.apache.spark.memory.MemoryMode.ON_HEAP, capacity);
        |    for (int i = 0 ; i < aggregateBufferBatch.numCols(); i++) {
@@ -313,10 +313,12 @@ class VectorizedHashMapGenerator(
     def hashLong(l: String): String = s"long $result = $l;"
     def hashBytes(b: String): String = {
       val hash = ctx.freshName("hash")
+      val bytes = ctx.freshName("bytes")
       s"""
          |int $result = 0;
-         |for (int i = 0; i < $b.length; i++) {
-         |  ${genComputeHash(ctx, s"$b[i]", ByteType, hash)}
+         |byte[] $bytes = $b;
+         |for (int i = 0; i < $bytes.length; i++) {
+         |  ${genComputeHash(ctx, s"$bytes[i]", ByteType, hash)}
          |  $result = ($result ^ (0x9e3779b9)) + $hash + ($result << 6) + ($result >>> 2);
          |}
        """.stripMargin
