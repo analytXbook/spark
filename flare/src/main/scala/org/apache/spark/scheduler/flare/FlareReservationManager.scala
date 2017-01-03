@@ -7,8 +7,8 @@ import java.util.Properties
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.scheduler._
-import org.apache.spark.util.{Clock, SystemClock, Utils}
-import org.apache.spark.{NewAccumulator, _}
+import org.apache.spark.util.{AccumulatorV2, Clock, SystemClock, Utils}
+import org.apache.spark._
 import org.apache.spark.internal.Logging
 
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, ListBuffer, MultiMap, Set}
@@ -410,7 +410,7 @@ private[spark] class FlareReservationManager(
     removeRunningTask(taskId)
     taskInfo.markFailed()
 
-    var accumUpdates: Seq[NewAccumulator[_, _]] = Seq.empty
+    var accumUpdates: Seq[AccumulatorV2[_, _]] = Seq.empty
     val failureReason = s"Lost task ${taskInfo.id} in stage ${taskSet.id} (TID $taskId, ${taskInfo.host}): " +
       reason.asInstanceOf[TaskFailedReason].toErrorString
 

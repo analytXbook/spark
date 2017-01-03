@@ -4,6 +4,7 @@ import org.apache.spark._
 import org.apache.spark.flare._
 import org.apache.spark.rpc._
 import org.apache.spark.internal.Logging
+import org.apache.spark.util.AccumulatorV2
 
 import scala.util.{Failure, Success}
 
@@ -18,7 +19,7 @@ private[spark] class FlareHeartbeatProxy(
       
       val driverTaskMetrics = taskMetrics.groupBy ({
         case (taskId, metrics) => driverId(taskId)
-      }).withDefaultValue(Array[(Long, Seq[NewAccumulator[_, _]])]())
+      }).withDefaultValue(Array[(Long, Seq[AccumulatorV2[_, _]])]())
       
       driverRefs.foreach {
         case (driverId, rpcRef) => {
