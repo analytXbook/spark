@@ -45,7 +45,7 @@ import java.util.Properties
 
 package object spark {
   // For package docs only
-  // val SPARK_VERSION = "2.0.0+flare.11-SNAPSHOT"
+  // val SPARK_VERSION = "2.0.3+flare.12"
 
   private object SparkBuildInfo {
 
