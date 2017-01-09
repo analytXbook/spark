@@ -222,7 +222,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
     managersByStageIdAndAttempt.get(taskSet.stageId).flatMap(_.remove(taskSet.stageAttemptId))
   }
 
-  /*def checkLocalityWaitReservations() = synchronized {
+  def checkLocalityWaitReservations() = synchronized {
     managersByStageIdAndAttempt.foreach {
       case (stageId, attempts) => {
         attempts.foreach {
@@ -235,7 +235,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
         }
       }
     }
-  }*/
+  }
   
   override def defaultParallelism(): Int = backend.defaultParallelism()
 
