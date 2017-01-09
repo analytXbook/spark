@@ -65,6 +65,9 @@ private[spark] class FlareReservationManager(
 
   val failedExecutors = new HashMap[Int, HashMap[String, Long]]()
 
+  var totalResultSize = 0L
+  var calculatedTasks = 0
+
   val epoch = scheduler.mapOutputTracker.getEpoch
   logDebug("Epoch for " + taskSet + ": " + epoch)
   for (t <- tasks) {
@@ -347,14 +350,27 @@ private[spark] class FlareReservationManager(
     highestLocality
   }
 
-  def abort(message: String, exception: Option[Throwable] = None) = {
+  def abort(message: String, exception: Option[Throwable] = None) = scheduler.synchronized {
     scheduler.dagScheduler.taskSetFailed(taskSet, message, exception)
     isZombie = true
     maybeFinishTaskSet()
   }
 
 
-  def canFetchMoreResults(size: Long): Boolean = true
+  def canFetchMoreResults(size: Long): Boolean = scheduler.synchronized {
+    totalResultSize += size
+    calculatedTasks += 1
+    if (maxResultSize > 0 && totalResultSize > maxResultSize) {
+      val msg = s"Total size of serialized results of ${calculatedTasks} tasks " +
+        s"(${Utils.bytesToString(totalResultSize)}) is bigger than spark.driver.maxResultSize " +
+        s"(${Utils.bytesToString(maxResultSize)})"
+      logError(msg)
+      abort(msg)
+      false
+    } else {
+      true
+    }
+  }
 
   def handleTaskGettingResult(taskId: Long): Unit = {
     val info = taskInfos(taskId)
