@@ -280,7 +280,7 @@ private[spark] object JsonProtocol {
     ("Getting Result Time" -> taskInfo.gettingResultTime) ~
     ("Finish Time" -> taskInfo.finishTime) ~
     ("Failed" -> taskInfo.failed) ~
-    ("Accumulables" -> JArray(taskInfo.accumulables.map(accumulableInfoToJson).toList))
+    ("Accumulables" -> JArray(taskInfo.accumulables.toList.map(accumulableInfoToJson)))
   }
 
   def accumulableInfoToJson(accumulableInfo: AccumulableInfo): JValue = {
@@ -309,11 +309,12 @@ private[spark] object JsonProtocol {
         case v: Int => JInt(v)
         case v: Long => JInt(v)
         // We only have 3 kind of internal accumulator types, so if it's not int or long, it must be
-        // the blocks accumulator, whose type is `Seq[(BlockId, BlockStatus)]`
+        // the blocks accumulator, whose type is `java.util.List[(BlockId, BlockStatus)]`
         case v =>
-          JArray(v.asInstanceOf[Seq[(BlockId, BlockStatus)]].toList.map { case (id, status) =>
-            ("Block ID" -> id.toString) ~
-            ("Status" -> blockStatusToJson(status))
+          JArray(v.asInstanceOf[java.util.List[(BlockId, BlockStatus)]].asScala.toList.map {
+            case (id, status) =>
+              ("Block ID" -> id.toString) ~
+              ("Status" -> blockStatusToJson(status))
           })
       }
     } else {
@@ -740,7 +741,7 @@ private[spark] object JsonProtocol {
             val id = BlockId((blockJson \ "Block ID").extract[String])
             val status = blockStatusFromJson(blockJson \ "Status")
             (id, status)
-          }
+          }.asJava
         case _ => throw new IllegalArgumentException(s"unexpected json value $value for " +
           "accumulator " + name.get)
       }
@@ -841,7 +842,7 @@ private[spark] object JsonProtocol {
         val accumUpdates = Utils.jsonOption(json \ "Accumulator Updates")
           .map(_.extract[List[JValue]].map(accumulableInfoFromJson))
           .getOrElse(taskMetricsFromJson(json \ "Metrics").accumulators().map(acc => {
-            acc.toInfo(Some(acc.localValue), None)
+            acc.toInfo(Some(acc.value), None)
           }))
         ExceptionFailure(className, description, stackTrace, fullStackTrace, None, accumUpdates)
       case `taskResultLost` => TaskResultLost

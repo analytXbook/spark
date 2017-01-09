@@ -22,11 +22,12 @@ import scala.util.Try
 
 import org.json4s.JsonDSL._
 
-import org.apache.spark.SparkException
+import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, InterpretedOrdering}
 import org.apache.spark.sql.catalyst.parser.{CatalystSqlParser, LegacyTypeStringParser}
 import org.apache.spark.sql.catalyst.util.quoteIdentifier
+import org.apache.spark.util.Utils
 
 /**
  * :: DeveloperApi ::
@@ -102,6 +103,18 @@ case class StructType(fields: Array[StructField]) extends DataType with Seq[Stru
   private lazy val fieldNamesSet: Set[String] = fieldNames.toSet
   private lazy val nameToField: Map[String, StructField] = fields.map(f => f.name -> f).toMap
   private lazy val nameToIndex: Map[String, Int] = fieldNames.zipWithIndex.toMap
+
+  override def equals(that: Any): Boolean = {
+    that match {
+      case StructType(otherFields) =>
+        java.util.Arrays.equals(
+          fields.asInstanceOf[Array[AnyRef]], otherFields.asInstanceOf[Array[AnyRef]])
+      case _ => false
+    }
+  }
+
+  private lazy val _hashCode: Int = java.util.Arrays.hashCode(fields.asInstanceOf[Array[AnyRef]])
+  override def hashCode(): Int = _hashCode
 
   /**
    * Creates a new [[StructType]] by adding a new field.
@@ -281,7 +294,13 @@ case class StructType(fields: Array[StructField]) extends DataType with Seq[Stru
   override def defaultSize: Int = fields.map(_.dataType.defaultSize).sum
 
   override def simpleString: String = {
-    val fieldTypes = fields.map(field => s"${field.name}:${field.dataType.simpleString}")
+    val fieldTypes = fields.view.map(field => s"${field.name}:${field.dataType.simpleString}")
+    Utils.truncatedString(fieldTypes, "struct<", ",", ">")
+  }
+
+  override def catalogString: String = {
+    // in catalogString, we should not truncate
+    val fieldTypes = fields.map(field => s"${field.name}:${field.dataType.catalogString}")
     s"struct<${fieldTypes.mkString(",")}>"
   }
 
@@ -365,10 +384,10 @@ object StructType extends AbstractDataType {
     StructType(fields.asScala)
   }
 
-  protected[sql] def fromAttributes(attributes: Seq[Attribute]): StructType =
+  private[sql] def fromAttributes(attributes: Seq[Attribute]): StructType =
     StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
 
-  def removeMetadata(key: String, dt: DataType): DataType =
+  private[sql] def removeMetadata(key: String, dt: DataType): DataType =
     dt match {
       case StructType(fields) =>
         val newFields = fields.map { f =>

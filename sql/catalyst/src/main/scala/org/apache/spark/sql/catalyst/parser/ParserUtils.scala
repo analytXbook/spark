@@ -39,8 +39,15 @@ object ParserUtils {
     stream.getText(Interval.of(0, stream.size()))
   }
 
-  def parseException(message: String, ctx: ParserRuleContext): ParseException = {
-    new ParseException(s"Operation not allowed: $message", ctx)
+  def operationNotAllowed(message: String, ctx: ParserRuleContext): Nothing = {
+    throw new ParseException(s"Operation not allowed: $message", ctx)
+  }
+
+  /** Check if duplicate keys exist in a set of key-value pairs. */
+  def checkDuplicateKeys[T](keyPairs: Seq[(String, T)], ctx: ParserRuleContext): Unit = {
+    keyPairs.groupBy(_._1).filter(_._2.size > 1).foreach { case (key, _) =>
+      throw new ParseException(s"Found duplicate keys '$key'.", ctx)
+    }
   }
 
   /** Get the code that creates the given node. */
@@ -70,8 +77,8 @@ object ParserUtils {
     Origin(Option(token.getLine), Option(token.getCharPositionInLine))
   }
 
-  /** Assert if a condition holds. If it doesn't throw a parse exception. */
-  def assert(f: => Boolean, message: String, ctx: ParserRuleContext): Unit = {
+  /** Validate the condition. If it doesn't throw a parse exception. */
+  def validate(f: => Boolean, message: String, ctx: ParserRuleContext): Unit = {
     if (!f) {
       throw new ParseException(message, ctx)
     }
@@ -185,9 +192,7 @@ object ParserUtils {
      * Map a [[LogicalPlan]] to another [[LogicalPlan]] if the passed context exists using the
      * passed function. The original plan is returned when the context does not exist.
      */
-    def optionalMap[C <: ParserRuleContext](
-        ctx: C)(
-        f: (C, LogicalPlan) => LogicalPlan): LogicalPlan = {
+    def optionalMap[C](ctx: C)(f: (C, LogicalPlan) => LogicalPlan): LogicalPlan = {
       if (ctx != null) {
         f(ctx, plan)
       } else {

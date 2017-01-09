@@ -11,7 +11,7 @@ import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.scheduler._
 import org.apache.spark.storage.BlockManagerId
-import org.apache.spark.util.{EncodedId, LongIdGenerator, ThreadUtils, Utils}
+import org.apache.spark.util._
 import org.apache.spark.internal.Logging
 
 import scala.collection.mutable.{ArrayBuffer, HashMap}
@@ -44,8 +44,8 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   val executors = new ArrayBuffer[String]
   val executorsByHost = new HashMap[String, ArrayBuffer[String]]
 
-  private val localityWaitScheduler =
-    ThreadUtils.newDaemonSingleThreadScheduledExecutor("task-locality-wait-scheduler")
+  // private val localityWaitScheduler =
+  //  ThreadUtils.newDaemonSingleThreadScheduledExecutor("task-locality-wait-scheduler")
 
   override def setDAGScheduler(dagScheduler: DAGScheduler): Unit = {
     this.dagScheduler = dagScheduler
@@ -68,11 +68,11 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   override def start() = {
     backend.start()
 
-    localityWaitScheduler.scheduleAtFixedRate(new Runnable {
+    /* localityWaitScheduler.scheduleAtFixedRate(new Runnable {
       override def run() = Utils.tryOrStopSparkContext(sc) {
         checkLocalityWaitReservations()
       }
-    }, CHECK_LOCALITY_WAIT_INTERVAL, CHECK_LOCALITY_WAIT_INTERVAL, TimeUnit.MILLISECONDS)
+    }, CHECK_LOCALITY_WAIT_INTERVAL, CHECK_LOCALITY_WAIT_INTERVAL, TimeUnit.MILLISECONDS) */
     
     backend.executors.foreach {
       case (executorId, executor) => {
@@ -192,7 +192,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
     }
     
     if (failedExecutor.isDefined) {
-      dagScheduler.executorLost(failedExecutor.get)
+      dagScheduler.executorLost(failedExecutor.get, new ExecutorLossReason("Unknown executor loss reason."))
     }
   }
 
@@ -222,7 +222,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
     managersByStageIdAndAttempt.get(taskSet.stageId).flatMap(_.remove(taskSet.stageAttemptId))
   }
 
-  def checkLocalityWaitReservations() = synchronized {
+  /*def checkLocalityWaitReservations() = synchronized {
     managersByStageIdAndAttempt.foreach {
       case (stageId, attempts) => {
         attempts.foreach {
@@ -235,12 +235,12 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
         }
       }
     }
-  }
+  }*/
   
   override def defaultParallelism(): Int = backend.defaultParallelism()
 
   override def executorHeartbeatReceived(execId: String,
-                                         accumUpdates: Array[(Long, Seq[NewAccumulator[_, _]])],
+                                         accumUpdates: Array[(Long, Seq[AccumulatorV2[_, _]])],
                                          blockManagerId: BlockManagerId): Boolean = {
     // (taskId, stageId, stageAttemptId, accumUpdates)
     val accumUpdatesWithTaskIds: Array[(Long, Int, Int, Seq[AccumulableInfo])] = synchronized {
@@ -250,7 +250,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
         // deserialized.  This brings trouble to the accumulator framework, which depends on
         // serialization to set the `atDriverSide` flag.  Here we call `acc.localValue` instead to
         // be more robust about this issue.
-        val accInfos = updates.map(acc => acc.toInfo(Some(acc.localValue), None))
+        val accInfos = updates.map(acc => acc.toInfo(Some(acc.value), None))
         taskIdToReservationManager.get(id).map { reservationManager =>
           (id, reservationManager.taskSet.stageId, reservationManager.taskSet.stageAttemptId, accInfos)
         }
@@ -268,7 +268,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   }
   
   override def stop(): Unit = {
-    localityWaitScheduler.shutdown()
+    // localityWaitScheduler.shutdown()
     if (backend != null) {
       backend.stop()
     }

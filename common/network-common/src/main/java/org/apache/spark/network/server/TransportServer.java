@@ -89,7 +89,7 @@ public class TransportServer implements Closeable {
 
     IOMode ioMode = IOMode.valueOf(conf.ioMode());
     EventLoopGroup bossGroup =
-      NettyUtils.createEventLoop(ioMode, conf.serverThreads(), "shuffle-server");
+      NettyUtils.createEventLoop(ioMode, conf.serverThreads(), conf.getModuleName() + "-server");
     EventLoopGroup workerGroup = bossGroup;
 
     PooledByteBufAllocator allocator = NettyUtils.createPooledByteBufAllocator(
@@ -130,7 +130,7 @@ public class TransportServer implements Closeable {
     channelFuture.syncUninterruptibly();
 
     port = ((InetSocketAddress) channelFuture.channel().localAddress()).getPort();
-    logger.debug("Shuffle server started on port :" + port);
+    logger.debug("Shuffle server started on port: {}", port);
   }
 
   @Override

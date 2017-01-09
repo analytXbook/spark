@@ -52,7 +52,7 @@ abstract class AggregationIterator(
    * - PartialMerge (for single distinct)
    * - Partial and PartialMerge (for single distinct)
    * - Final
-   * - Complete (for SortBasedAggregate with functions that does not support Partial)
+   * - Complete (for SortAggregate with functions that does not support Partial)
    * - Final and Complete (currently not used)
    *
    * TODO: AggregateMode should have only two modes: Update and Merge, AggregateExpression
@@ -73,9 +73,10 @@ abstract class AggregationIterator(
       startingInputBufferOffset: Int): Array[AggregateFunction] = {
     var mutableBufferOffset = 0
     var inputBufferOffset: Int = startingInputBufferOffset
-    val functions = new Array[AggregateFunction](expressions.length)
+    val expressionsLength = expressions.length
+    val functions = new Array[AggregateFunction](expressionsLength)
     var i = 0
-    while (i < expressions.length) {
+    while (i < expressionsLength) {
       val func = expressions(i).aggregateFunction
       val funcWithBoundReferences: AggregateFunction = expressions(i).mode match {
         case Partial | Complete if func.isInstanceOf[ImperativeAggregate] =>
@@ -171,7 +172,7 @@ abstract class AggregationIterator(
             case PartialMerge | Final =>
               (buffer: MutableRow, row: InternalRow) => ae.merge(buffer, row)
           }
-      }
+      }.toArray
       // This projection is used to merge buffer values for all expression-based aggregates.
       val aggregationBufferSchema = functions.flatMap(_.aggBufferAttributes)
       val updateProjection =

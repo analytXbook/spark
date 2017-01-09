@@ -23,6 +23,7 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.execution.streaming.{Sink, Source}
+import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
 
 /**
@@ -111,8 +112,10 @@ trait SchemaRelationProvider {
 }
 
 /**
+ * ::Experimental::
  * Implemented by objects that can produce a streaming [[Source]] for a specific format or system.
  */
+@Experimental
 trait StreamSourceProvider {
 
   /** Returns the name and schema of the source that can be used to continually read data. */
@@ -131,13 +134,16 @@ trait StreamSourceProvider {
 }
 
 /**
+ * ::Experimental::
  * Implemented by objects that can produce a streaming [[Sink]] for a specific format or system.
  */
+@Experimental
 trait StreamSinkProvider {
   def createSink(
       sqlContext: SQLContext,
       parameters: Map[String, String],
-      partitionColumns: Seq[String]): Sink
+      partitionColumns: Seq[String],
+      outputMode: OutputMode): Sink
 }
 
 /**

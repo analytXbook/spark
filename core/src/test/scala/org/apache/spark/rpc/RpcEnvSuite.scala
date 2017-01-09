@@ -489,7 +489,7 @@ abstract class RpcEnvSuite extends SparkFunSuite with BeforeAndAfterAll {
   /**
    * Setup an [[RpcEndpoint]] to collect all network events.
    *
-   * @return the [[RpcEndpointRef]] and an `ConcurrentLinkedQueue` that contains network events.
+   * @return the [[RpcEndpointRef]] and a `ConcurrentLinkedQueue` that contains network events.
    */
   private def setupNetworkEndpoint(
       _env: RpcEnv,
@@ -869,6 +869,19 @@ abstract class RpcEnvSuite extends SparkFunSuite with BeforeAndAfterAll {
     verify(endpoint).onStop()
     verify(endpoint, never()).onDisconnected(any())
     verify(endpoint, never()).onNetworkError(any(), any())
+  }
+
+  test("isInRPCThread") {
+    val rpcEndpointRef = env.setupEndpoint("isInRPCThread", new RpcEndpoint {
+      override val rpcEnv = env
+
+      override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
+        case m => context.reply(rpcEnv.isInRPCThread)
+      }
+    })
+    assert(rpcEndpointRef.askWithRetry[Boolean]("hello") === true)
+    assert(env.isInRPCThread === false)
+    env.stop(rpcEndpointRef)
   }
 }
 

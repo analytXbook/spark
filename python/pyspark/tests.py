@@ -475,6 +475,18 @@ class RDDTests(ReusedPySparkTestCase):
         self.assertEqual(0, self.sc.emptyRDD().sum())
         self.assertEqual(6, self.sc.parallelize([1, 2, 3]).sum())
 
+    def test_to_localiterator(self):
+        from time import sleep
+        rdd = self.sc.parallelize([1, 2, 3])
+        it = rdd.toLocalIterator()
+        sleep(5)
+        self.assertEqual([1, 2, 3], sorted(it))
+
+        rdd2 = rdd.repartition(1000)
+        it2 = rdd2.toLocalIterator()
+        sleep(5)
+        self.assertEqual([1, 2, 3], sorted(it2))
+
     def test_save_as_textfile_with_unicode(self):
         # Regression test for SPARK-970
         x = u"\u00A1Hola, mundo!"
@@ -1920,6 +1932,14 @@ class ContextTests(unittest.TestCase):
             rdd = sc.parallelize([0, 1, 2])
             post_parallalize_temp_files = os.listdir(sc._temp_dir)
             self.assertEqual(temp_files, post_parallalize_temp_files)
+
+    def test_set_conf(self):
+        # This is for an internal use case. When there is an existing SparkContext,
+        # SparkSession's builder needs to set configs into SparkContext's conf.
+        sc = SparkContext()
+        sc._conf.set("spark.test.SPARK16224", "SPARK16224")
+        self.assertEqual(sc._jsc.sc().conf().get("spark.test.SPARK16224"), "SPARK16224")
+        sc.stop()
 
     def test_stop(self):
         sc = SparkContext()
