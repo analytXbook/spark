@@ -11,7 +11,6 @@ import org.apache.spark.util.{AccumulatorV2, Clock, SystemClock, Utils}
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 
-import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, ListBuffer, MultiMap, Set}
 import scala.collection.mutable
 import scala.util.Random
 import scala.util.control.NonFatal
@@ -39,20 +38,21 @@ private[spark] class FlareReservationManager(
   val tasks = taskSet.tasks
   val numTasks = tasks.length
 
-  val currentLocalityWaitLevel = new HashMap[Int, (TaskLocality.Value, Long)]()
-  val localityLostTasks = new HashSet[Int] with mutable.SynchronizedSet[Int]
+  val currentLocalityWaitLevel = new mutable.HashMap[Int, (TaskLocality.Value, Long)]()
+  val localityLostTasks = new mutable.HashSet[Int] with mutable.SynchronizedSet[Int]
 
-  val unlaunchedConstrainedTasks = new HashMap[String, Set[Int]] with mutable.SynchronizedMap[String, Set[Int]] with MultiMap[String, Int]
-  val unlaunchedUnconstrainedTasks = new ArrayBuffer[Int] with mutable.SynchronizedBuffer[Int]
+  val unlaunchedConstrainedTasks = new mutable.HashMap[String, mutable.Set[Int]] with mutable.SynchronizedMap[String, mutable.Set[Int]] with mutable.MultiMap[String, Int]
+  val unlaunchedUnconstrainedTasks = new mutable.ArrayBuffer[Int] with mutable.SynchronizedBuffer[Int]
 
-  val pendingConstrainedTaskReservations = new HashMap[Int, Set[String]] with mutable.SynchronizedMap[Int, Set[String]] with MultiMap[Int, String]
-  val pendingReservations = (new HashMap[String, Int] with mutable.SynchronizedMap[String, Int]).withDefaultValue(0)
+  val pendingConstrainedTaskReservations = new mutable.HashMap[Int, mutable.Set[String]] with mutable.SynchronizedMap[Int, mutable.Set[String]] with mutable.MultiMap[Int, String]
+  val pendingReservations = (new mutable.HashMap[String, Int] with mutable.SynchronizedMap[String, Int]).withDefaultValue(0)
+  val pendingUnconstrainedReservations = new mutable.HashMap[String, Int].withDefaultValue(0)
 
-  val runningTasks = new HashSet[Long] with mutable.SynchronizedSet[Long]
+  val runningTasks = new mutable.HashSet[Long] with mutable.SynchronizedSet[Long]
 
   def runningTaskCount: Int = runningTasks.size
 
-  val taskInfos = new HashMap[Long, TaskInfo] with mutable.SynchronizedMap[Long, TaskInfo]
+  val taskInfos = new mutable.HashMap[Long, TaskInfo] with mutable.SynchronizedMap[Long, TaskInfo]
 
   val taskAttempts = Array.fill[List[TaskInfo]](numTasks)(Nil)
   val successful = new Array[Boolean](numTasks)
@@ -61,9 +61,9 @@ private[spark] class FlareReservationManager(
 
   val numFailures = new Array[Int](numTasks)
 
-  val recentExceptions = HashMap[String, (Int, Long)]()
+  val recentExceptions = mutable.HashMap[String, (Int, Long)]()
 
-  val failedExecutors = new HashMap[Int, HashMap[String, Long]]()
+  val failedExecutors = new mutable.HashMap[Int, mutable.HashMap[String, Long]]()
 
   var totalResultSize = 0L
   var calculatedTasks = 0
@@ -120,7 +120,7 @@ private[spark] class FlareReservationManager(
   }
 
   def getReservations: Map[String, Int] = {
-    val reservations = new ListBuffer[String]
+    val reservations = new mutable.ListBuffer[String]
     for (index <- 0 until numTasks) {
       val task = tasks(index)
 
@@ -161,7 +161,9 @@ private[spark] class FlareReservationManager(
 
     val remainingReservations = Math.ceil(unlaunchedUnconstrainedTasks.size * probeRatio).toInt
     for (i <- 0 until remainingReservations) {
-      reservations += randomExecutor
+      val executor = randomExecutor
+      reservations += executor
+      pendingUnconstrainedReservations(executor) += 1
     }
 
     val reservationCounts = reservations.groupBy(identity).mapValues(_.size)
@@ -170,40 +172,46 @@ private[spark] class FlareReservationManager(
     reservationCounts
   }
 
-  private def replacementReservations(taskId: Long): Map[String, Int] = {
-    val index = taskInfos(taskId).index
-    val task = tasks(index)
 
-    val triedExecutors = failedExecutors.get(index).map(_.keySet.toSeq).getOrElse(Seq.empty)
+  private def replacementReservations(taskIndex: Int): Map[String, Int] = {
+    val task = tasks(taskIndex)
+
+    val triedExecutors = failedExecutors.get(taskIndex).map(_.keySet).getOrElse(Set.empty[String])
 
     val executor = if (task.preferredLocations.isEmpty) {
-      val untriedExecutors = scheduler.executors.diff(triedExecutors)
-      unlaunchedUnconstrainedTasks += index
+      val untriedExecutors = scheduler.executors.filterNot(executor => triedExecutors.contains(executor))
+      unlaunchedUnconstrainedTasks += taskIndex
 
-      if (untriedExecutors.isEmpty) {
-        logDebug(s"All executors have been tried for failed task $taskId, selecting a random executor")
+      val targetExecutor = if (untriedExecutors.isEmpty) {
+        logDebug(s"All executors have been tried for failed task $taskIndex, selecting a random executor")
         randomExecutor
       } else {
         untriedExecutors(Random.nextInt(untriedExecutors.length))
       }
+      pendingUnconstrainedReservations(targetExecutor) += 1
+      targetExecutor
     } else {
       val preferredExecutors = task.preferredLocations.flatMap {
-        case ExecutorCacheTaskLocation(host, executorId) => List((executorId, host))
-        case taskLocation => scheduler.executorsByHost.get(taskLocation.host).getOrElse(List.empty).map(executorId => (executorId, taskLocation.host))
-      }.diff(triedExecutors)
+        case ExecutorCacheTaskLocation(host, executorId) =>
+          if (scheduler.executors.contains(executorId)) List((executorId, host)) else List.empty
+        case taskLocation =>
+          scheduler.executorsByHost.get(taskLocation.host).getOrElse(List.empty).map(executorId => (executorId, taskLocation.host))
+      }.filterNot { case (executor, _) => triedExecutors.contains(executor)}
 
       if (preferredExecutors.isEmpty) {
-        logDebug(s"No additional executors could be found matching placement constraints for failed task $taskId, allowing task to run unconstrained")
-        unlaunchedUnconstrainedTasks += index
-        currentLocalityWaitLevel(index) = (TaskLocality.ANY, clock.getTimeMillis())
+        logDebug(s"No additional executors could be found matching placement constraints for failed task $taskIndex, allowing task to run unconstrained")
+        unlaunchedUnconstrainedTasks += taskIndex
+        currentLocalityWaitLevel(taskIndex) = (TaskLocality.ANY, clock.getTimeMillis())
 
-        randomExecutor
+        val targetExecutor = randomExecutor
+        pendingUnconstrainedReservations(targetExecutor) += 1
+        targetExecutor
       } else {
         val (targetExecutor, executorHost) = preferredExecutors(Random.nextInt(preferredExecutors.length))
-        unlaunchedConstrainedTasks.addBinding(targetExecutor, index)
-        pendingConstrainedTaskReservations.addBinding(index, targetExecutor)
+        unlaunchedConstrainedTasks.addBinding(targetExecutor, taskIndex)
+        pendingConstrainedTaskReservations.addBinding(taskIndex, targetExecutor)
 
-        currentLocalityWaitLevel(index) = (getMatchedLocality(task, targetExecutor, executorHost), clock.getTimeMillis())
+        currentLocalityWaitLevel(taskIndex) = (getMatchedLocality(task, targetExecutor, executorHost), clock.getTimeMillis())
 
         targetExecutor
       }
@@ -218,7 +226,7 @@ private[spark] class FlareReservationManager(
     //for flare, we'll use a default of 10s instead of 3s
     val defaultWait = conf.get("spark.locality.wait", "10s")
 
-    val reservations = new ListBuffer[String]
+    val reservations = new mutable.ListBuffer[String]
     val currentTime = clock.getTimeMillis()
 
     currentLocalityWaitLevel.foreach {
@@ -275,6 +283,7 @@ private[spark] class FlareReservationManager(
                     } else {
                       val executor = potentialExecutors(Random.nextInt(potentialExecutors.length))
                       reservations += executor
+                      pendingUnconstrainedReservations(executor) += 1
 
                       log.debug(s"Locality timed out on PROCESS_LOCAL task $taskIndex in stage ${taskSet.stageId}.${taskSet.stageAttemptId}, locality downgraded to ANY, submitting extra reservation to executor $executor")
                     }
@@ -318,6 +327,7 @@ private[spark] class FlareReservationManager(
                   } else {
                     val executor = potentialExecutors(Random.nextInt(potentialExecutors.length))
                     reservations += executor
+                    pendingUnconstrainedReservations(executor) += 1
 
                     log.debug(s"Locality timed out on NODE_LOCAL task $taskIndex in stage ${taskSet.stageId}.${taskSet.stageAttemptId}, locality downgraded to ANY, submitting extra reservation to executor $executor")
                   }
@@ -410,7 +420,6 @@ private[spark] class FlareReservationManager(
     maybeFinishTaskSet()
   }
 
-
   def handleFailedTask(taskId: Long, state: TaskState, reason: TaskEndReason): Map[String, Int] = {
     val taskInfo = taskInfos(taskId)
     val index = taskInfo.index
@@ -485,7 +494,7 @@ private[spark] class FlareReservationManager(
         None
     }
 
-    failedExecutors.getOrElseUpdate(index, new HashMap[String, Long]()).put(taskInfo.executorId, clock.getTimeMillis())
+    failedExecutors.getOrElseUpdate(index, new mutable.HashMap[String, Long]()).put(taskInfo.executorId, clock.getTimeMillis())
 
     scheduler.dagScheduler.taskEnded(tasks(index), reason, null, accumUpdates, taskInfo)
 
@@ -502,7 +511,7 @@ private[spark] class FlareReservationManager(
     }
 
     maybeFinishTaskSet()
-    replacementReservations(taskId)
+    replacementReservations(index)
   }
 
   def isMaxParallelism: Boolean = parallelismLimit.fold(false)(runningTaskCount >= _)
@@ -522,23 +531,27 @@ private[spark] class FlareReservationManager(
         currentLocalityWaitLevel.remove(index)
 
         Some(index)
-      }
-      else if (!unlaunchedUnconstrainedTasks.isEmpty) {
-        Some(unlaunchedUnconstrainedTasks.remove(0))
-      } else if (!localityLostTasks.isEmpty) {
-        val index = localityLostTasks.head
-
-        log.debug(s"No unconstrained tasks are pending for stage ${taskSet.stageId}.${taskSet.stageAttemptId}, running locality timed out constrained task $index on executor $executorId at ANY level")
-
-        pendingConstrainedTaskReservations.remove(index).foreach(
-          _.foreach(unlaunchedConstrainedTasks.removeBinding(_, index)))
-
-        localityLostTasks.remove(index)
-        currentLocalityWaitLevel.remove(index)
-
-        Some(index)
       } else {
-        None
+        if (pendingUnconstrainedReservations(executorId) > 0)
+          pendingUnconstrainedReservations(executorId) -= 1
+
+        if (!unlaunchedUnconstrainedTasks.isEmpty) {
+          Some(unlaunchedUnconstrainedTasks.remove(0))
+        } else if (!localityLostTasks.isEmpty) {
+          val index = localityLostTasks.head
+
+          log.debug(s"No unconstrained tasks are pending for stage ${taskSet.stageId}.${taskSet.stageAttemptId}, running locality timed out constrained task $index on executor $executorId at ANY level")
+
+          pendingConstrainedTaskReservations.remove(index).foreach(
+            _.foreach(unlaunchedConstrainedTasks.removeBinding(_, index)))
+
+          localityLostTasks.remove(index)
+          currentLocalityWaitLevel.remove(index)
+
+          Some(index)
+        } else {
+          None
+        }
       }
     }
     
@@ -572,5 +585,49 @@ private[spark] class FlareReservationManager(
       scheduler.dagScheduler.taskStarted(task, info)
       new TaskDescription(taskId, attemptNumber, executorId, taskName, index, serializedTask)
     }
-  }  
+  }
+
+  def executorLost(executorId: String, host: String, reason: ExecutorLossReason): Map[String, Int] = {
+    var reservations = mutable.HashMap[String, Int]().withDefaultValue(0)
+
+    unlaunchedConstrainedTasks(executorId).foreach { index =>
+      reservations ++ replacementReservations(index).map { case (e, r) => e -> (r + reservations(e))}
+    }
+
+    if (pendingUnconstrainedReservations(executorId) > 0) {
+      val replacementExecutor = randomExecutor
+      pendingUnconstrainedReservations(replacementExecutor) += 1
+      reservations(replacementExecutor) += 1
+    }
+
+    // Re-enqueue any tasks that ran on the failed executor if this is a shuffle map stage,
+    // and we are not using an external shuffle server which could serve the shuffle outputs.
+    // The reason is the next stage wouldn't be able to fetch the data from this dead executor
+    // so we would need to rerun these tasks on other executors.
+    if (tasks(0).isInstanceOf[ShuffleMapTask] && !env.blockManager.externalShuffleServiceEnabled) {
+      for ((taskId, info) <- taskInfos if info.executorId == executorId) {
+        val index = taskInfos(taskId).index
+        if (successful(index)) {
+          successful(index) = false
+          tasksSuccessful -= 1
+          reservations ++ replacementReservations(index).map { case (e, r) => e -> (r + reservations(e))}
+          // Tell the DAGScheduler that this task was resubmitted so that it doesn't think our
+          // stage finishes when a total of tasks.size tasks finish.
+          scheduler.dagScheduler.taskEnded(tasks(index), Resubmitted, null, Seq.empty, info)
+        }
+      }
+    }
+
+    for ((taskId, info) <- taskInfos if info.running && info.executorId == executorId) {
+      val exitCausedByApp: Boolean = reason match {
+        case exited: ExecutorExited => exited.exitCausedByApp
+        case ExecutorKilled => false
+        case _ => true
+      }
+      reservations ++= handleFailedTask(taskId, TaskState.FAILED, ExecutorLostFailure(info.executorId, exitCausedByApp,
+        Some(reason.toString))).map { case (e, r) => e -> (r + reservations(e)) }
+    }
+
+    reservations.toMap
+  }
 }
