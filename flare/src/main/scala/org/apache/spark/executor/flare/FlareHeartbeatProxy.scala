@@ -18,14 +18,19 @@ private[spark] class FlareHeartbeatProxy(
       context.reply(HeartbeatResponse(false))
       
       val driverTaskMetrics = taskMetrics.groupBy ({
-        case (taskId, metrics) => driverId(taskId)
+        case (taskId, metrics) =>
+          //deserializing an accumulator at this proxy endpoint sets the atDriverSide flag to true.
+          //before it can be forwarded to the driver, the flag needs to be set to false so that
+          //it doesn't check to see if the accumulator is registered while serializing out.
+          metrics.foreach( _.atDriverSide = false )
+          driverId(taskId)
       }).withDefaultValue(Array[(Long, Seq[AccumulatorV2[_, _]])]())
       
       driverRefs.foreach {
         case (driverId, rpcRef) => {
           rpcRef.ask[HeartbeatResponse](Heartbeat(executorId, driverTaskMetrics(driverId), blockManagerId)) onComplete {
             case Success(HeartbeatResponse(reregisterBlockManager)) => 
-            case Failure(error) => logError(s"Error heartbeating: $error")
+            case Failure(error) => logError(s"Error heartbeating: $error", error)
           }
         }
       }
