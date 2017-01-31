@@ -44,7 +44,7 @@ private[spark] case class AccumulatorMetadata(
  */
 abstract class AccumulatorV2[IN, OUT] extends Serializable {
   private[spark] var metadata: AccumulatorMetadata = _
-  private[this] var atDriverSide = true
+  private[spark] var atDriverSide = true
 
   private[spark] def register(
       sc: SparkContext,
