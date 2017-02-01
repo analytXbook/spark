@@ -232,7 +232,7 @@ private[spark] class FlareReservationManager(
     currentLocalityWaitLevel.foreach {
       case (taskIndex, (locality, localityStartTime)) => {
         val elapsedTime = currentTime - localityStartTime
-        val triedExecutors = pendingConstrainedTaskReservations.getOrElse(taskIndex, Set.empty).union(failedExecutors.get(taskIndex).map(_.keySet).getOrElse(Set.empty))
+        val triedExecutors = pendingConstrainedTaskReservations.getOrElse(taskIndex, Set.empty[String]).union(failedExecutors.get(taskIndex).map(_.keySet).getOrElse(Set.empty))
 
         locality match {
           case TaskLocality.PROCESS_LOCAL => {
