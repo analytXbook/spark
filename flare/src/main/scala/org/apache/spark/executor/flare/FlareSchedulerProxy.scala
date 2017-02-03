@@ -30,6 +30,8 @@ private[spark] class FlareSchedulerProxy(
   }
 
   private def registerWithDriver(driverId: Int, driverRef: RpcEndpointRef) = {
+    logInfo(s"Registering with driver ${driverId} scheduler")
+
     driverRef.ask[RegisteredExecutorResponse](registerMsg) onComplete {
       case Success(response) => {
         response match {
