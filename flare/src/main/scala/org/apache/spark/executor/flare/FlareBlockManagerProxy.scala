@@ -87,13 +87,13 @@ private[spark] class FlareBlockManagerProxy(
       val driverId = driverIdFromBlockId(blockId)
       driverRefs.get(driverId) match {
         case Some(driverRef) => driverRef.ask[Boolean](_updateBlockInfo) onComplete {
-          case Success(reregister) => {
-            if (reregister) {
+          case Success(updateSuccess) => {
+            if (!updateSuccess) {
               logWarning(s"Told to reregister when updating block status for ${blockId.name} with driver $driverId, no longer considered registered with driver")
               registeredDrivers.remove(driverId)
             }
 
-            context.reply(reregister)
+            context.reply(updateSuccess)
           }
           case Failure(error) => context.sendFailure(error)
         }
