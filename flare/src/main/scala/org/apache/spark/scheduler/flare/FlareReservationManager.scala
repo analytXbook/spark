@@ -397,7 +397,7 @@ private[spark] class FlareReservationManager(
   def handleSuccessfulTask(taskId: Long, result: DirectTaskResult[_]) = {
     val taskInfo = taskInfos(taskId)
     val index = taskInfo.index
-    taskInfo.markSuccessful()
+    taskInfo.markFinished(TaskState.FINISHED)
     removeRunningTask(taskId)
 
     scheduler.dagScheduler.taskEnded(
@@ -427,7 +427,7 @@ private[spark] class FlareReservationManager(
       return Map.empty
     }
     removeRunningTask(taskId)
-    taskInfo.markFailed()
+    taskInfo.markFinished(state)
 
     var accumUpdates: Seq[AccumulatorV2[_, _]] = Seq.empty
     val failureReason = s"Lost task ${taskInfo.id} in stage ${taskSet.id} (TID $taskId, ${taskInfo.host}): " +

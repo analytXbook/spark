@@ -253,7 +253,7 @@ private[spark] object FlareExecutorBackend extends Logging {
       executorConf.set("spark.driver.host", proxyRpcEnv.address.host)
       executorConf.set("spark.driver.port", proxyRpcEnv.address.port.toString)
 
-      val env = SparkEnv.createExecutorEnv(executorConf, executorId, clusterConf.hostname, EXECUTOR_PORT, cores, isLocal = false)
+      val env = SparkEnv.createExecutorEnv(executorConf, executorId, clusterConf.hostname, EXECUTOR_PORT, cores, None, isLocal = false)
      
       val driverRef = env.rpcEnv.setupEndpointRef(proxyRpcEnv.address, FlareSchedulerBackend.ENDPOINT_NAME)
 
