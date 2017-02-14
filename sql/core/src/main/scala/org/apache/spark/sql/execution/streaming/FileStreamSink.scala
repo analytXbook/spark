@@ -17,13 +17,12 @@
 
 package org.apache.spark.sql.execution.streaming
 
-import java.util.UUID
-
 import org.apache.hadoop.fs.Path
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{DataFrame, SparkSession}
-import org.apache.spark.sql.execution.datasources.FileFormat
+import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.execution.datasources.{FileCommitProtocol, FileFormat, FileFormatWriter}
 
 object FileStreamSink {
   // The name of the subdirectory that is used to store metadata about which files are valid.
@@ -40,45 +39,49 @@ object FileStreamSink {
 class FileStreamSink(
     sparkSession: SparkSession,
     path: String,
-    fileFormat: FileFormat) extends Sink with Logging {
+    fileFormat: FileFormat,
+    partitionColumnNames: Seq[String],
+    options: Map[String, String]) extends Sink with Logging {
 
   private val basePath = new Path(path)
   private val logPath = new Path(basePath, FileStreamSink.metadataDir)
-  private val fileLog = new FileStreamSinkLog(sparkSession, logPath.toUri.toString)
-  private val fs = basePath.getFileSystem(sparkSession.sessionState.newHadoopConf())
+  private val fileLog =
+    new FileStreamSinkLog(FileStreamSinkLog.VERSION, sparkSession, logPath.toUri.toString)
+  private val hadoopConf = sparkSession.sessionState.newHadoopConf()
 
   override def addBatch(batchId: Long, data: DataFrame): Unit = {
     if (batchId <= fileLog.getLatest().map(_._1).getOrElse(-1L)) {
       logInfo(s"Skipping already committed batch $batchId")
     } else {
-      val files = fs.listStatus(writeFiles(data)).map { f =>
-        SinkFileStatus(
-          path = f.getPath.toUri.toString,
-          size = f.getLen,
-          isDir = f.isDirectory,
-          modificationTime = f.getModificationTime,
-          blockReplication = f.getReplication,
-          blockSize = f.getBlockSize,
-          action = FileStreamSinkLog.ADD_ACTION)
+      val committer = FileCommitProtocol.instantiate(
+        sparkSession.sessionState.conf.streamingFileCommitProtocolClass, path, isAppend = false)
+      committer match {
+        case manifestCommitter: ManifestFileCommitProtocol =>
+          manifestCommitter.setupManifestOptions(fileLog, batchId)
+        case _ =>  // Do nothing
       }
-      if (fileLog.add(batchId, files)) {
-        logInfo(s"Committed batch $batchId")
-      } else {
-        throw new IllegalStateException(s"Race while writing batch $batchId")
-      }
-    }
-  }
 
-  /** Writes the [[DataFrame]] to a UUID-named dir, returning the list of files paths. */
-  private def writeFiles(data: DataFrame): Array[Path] = {
-    val file = new Path(basePath, UUID.randomUUID().toString).toUri.toString
-    data.write.parquet(file)
-    sparkSession.read
-        .schema(data.schema)
-        .parquet(file)
-        .inputFiles
-        .map(new Path(_))
-        .filterNot(_.getName.startsWith("_"))
+      // Get the actual partition columns as attributes after matching them by name with
+      // the given columns names.
+      val partitionColumns: Seq[Attribute] = partitionColumnNames.map { col =>
+        val nameEquality = data.sparkSession.sessionState.conf.resolver
+        data.logicalPlan.output.find(f => nameEquality(f.name, col)).getOrElse {
+          throw new RuntimeException(s"Partition column $col not found in schema ${data.schema}")
+        }
+      }
+
+      FileFormatWriter.write(
+        sparkSession = sparkSession,
+        plan = data.logicalPlan,
+        fileFormat = fileFormat,
+        committer = committer,
+        outputPath = path,
+        hadoopConf = hadoopConf,
+        partitionColumns = partitionColumns,
+        bucketSpec = None,
+        refreshFunction = _ => (),
+        options = options)
+    }
   }
 
   override def toString: String = s"FileSink[$path]"

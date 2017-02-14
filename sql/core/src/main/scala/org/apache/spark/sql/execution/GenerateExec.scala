@@ -20,6 +20,7 @@ package org.apache.spark.sql.execution
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.metric.SQLMetrics
 
 /**
@@ -55,10 +56,12 @@ case class GenerateExec(
     child: SparkPlan)
   extends UnaryExecNode {
 
-  private[sql] override lazy val metrics = Map(
+  override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
   override def producedAttributes: AttributeSet = AttributeSet(output)
+
+  override def outputPartitioning: Partitioning = child.outputPartitioning
 
   val boundGenerator = BindReferences.bindReference(generator, child.output)
 
@@ -66,7 +69,7 @@ case class GenerateExec(
     // boundGenerator.terminate() should be triggered after all of the rows in the partition
     val rows = if (join) {
       child.execute().mapPartitionsInternal { iter =>
-        val generatorNullRow = new GenericInternalRow(generator.elementTypes.size)
+        val generatorNullRow = new GenericInternalRow(generator.elementSchema.length)
         val joinedRow = new JoinedRow
 
         iter.flatMap { row =>

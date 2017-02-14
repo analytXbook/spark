@@ -17,16 +17,19 @@
 
 package org.apache.spark.sql.catalyst.expressions
 
-import java.io.{ByteArrayOutputStream, StringWriter}
+import java.io.{ByteArrayOutputStream, CharArrayWriter, StringWriter}
 
 import scala.util.parsing.combinator.RegexParsers
 
 import com.fasterxml.jackson.core._
 
-import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.analysis.TypeCheckResult
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
-import org.apache.spark.sql.types.{DataType, StringType}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.json._
+import org.apache.spark.sql.catalyst.util.ParseModes
+import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.Utils
 
@@ -356,9 +359,9 @@ case class JsonTuple(children: Seq[Expression])
   // and count the number of foldable fields, we'll use this later to optimize evaluation
   @transient private lazy val constantFields: Int = foldableFieldNames.count(_ != null)
 
-  override def elementTypes: Seq[(DataType, Boolean, String)] = fieldExpressions.zipWithIndex.map {
-    case (_, idx) => (StringType, true, s"c$idx")
-  }
+  override def elementSchema: StructType = StructType(fieldExpressions.zipWithIndex.map {
+    case (_, idx) => StructField(s"c$idx", StringType, nullable = true)
+  })
 
   override def prettyName: String = "json_tuple"
 
@@ -467,3 +470,71 @@ case class JsonTuple(children: Seq[Expression])
   }
 }
 
+/**
+ * Converts an json input string to a [[StructType]] with the specified schema.
+ */
+case class JsonToStruct(schema: StructType, options: Map[String, String], child: Expression)
+  extends Expression with CodegenFallback with ExpectsInputTypes {
+  override def nullable: Boolean = true
+
+  @transient
+  lazy val parser =
+    new JacksonParser(
+      schema,
+      "invalid", // Not used since we force fail fast.  Invalid rows will be set to `null`.
+      new JSONOptions(options ++ Map("mode" -> ParseModes.FAIL_FAST_MODE)))
+
+  override def dataType: DataType = schema
+  override def children: Seq[Expression] = child :: Nil
+
+  override def eval(input: InternalRow): Any = {
+    try parser.parse(child.eval(input).toString).head catch {
+      case _: SparkSQLJsonProcessingException => null
+    }
+  }
+
+  override def inputTypes: Seq[AbstractDataType] = StringType :: Nil
+}
+
+/**
+ * Converts a [[StructType]] to a json output string.
+ */
+case class StructToJson(options: Map[String, String], child: Expression)
+  extends Expression with CodegenFallback with ExpectsInputTypes {
+  override def nullable: Boolean = true
+
+  @transient
+  lazy val writer = new CharArrayWriter()
+
+  @transient
+  lazy val gen =
+    new JacksonGenerator(child.dataType.asInstanceOf[StructType], writer)
+
+  override def dataType: DataType = StringType
+  override def children: Seq[Expression] = child :: Nil
+
+  override def checkInputDataTypes(): TypeCheckResult = {
+    if (StructType.acceptsType(child.dataType)) {
+      try {
+        JacksonUtils.verifySchema(child.dataType.asInstanceOf[StructType])
+        TypeCheckResult.TypeCheckSuccess
+      } catch {
+        case e: UnsupportedOperationException =>
+          TypeCheckResult.TypeCheckFailure(e.getMessage)
+      }
+    } else {
+      TypeCheckResult.TypeCheckFailure(
+        s"$prettyName requires that the expression is a struct expression.")
+    }
+  }
+
+  override def eval(input: InternalRow): Any = {
+    gen.write(child.eval(input).asInstanceOf[InternalRow])
+    gen.flush()
+    val json = writer.toString
+    writer.reset()
+    UTF8String.fromString(json)
+  }
+
+  override def inputTypes: Seq[AbstractDataType] = StructType :: Nil
+}
