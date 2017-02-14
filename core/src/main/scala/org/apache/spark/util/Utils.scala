@@ -18,7 +18,7 @@
 package org.apache.spark.util
 
 import java.io._
-import java.lang.management.ManagementFactory
+import java.lang.management.{LockInfo, ManagementFactory, MonitorInfo}
 import java.net._
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
@@ -39,6 +39,7 @@ import scala.reflect.ClassTag
 import scala.util.Try
 import scala.util.control.{ControlThrowable, NonFatal}
 
+import _root_.io.netty.channel.unix.Errors.NativeIoException
 import com.google.common.cache.{CacheBuilder, CacheLoader, LoadingCache}
 import com.google.common.io.{ByteStreams, Files => GFiles}
 import com.google.common.net.InetAddresses
@@ -1248,7 +1249,7 @@ private[spark] object Utils extends Logging {
         val currentThreadName = Thread.currentThread().getName
         if (sc != null) {
           logError(s"uncaught error in thread $currentThreadName, stopping SparkContext", t)
-          sc.stop()
+          sc.stopInNewThread()
         }
         if (!NonFatal(t)) {
           logError(s"throw uncaught fatal error in thread $currentThreadName", t)
@@ -1418,8 +1419,12 @@ private[spark] object Utils extends Logging {
             }
             callStack(0) = ste.toString // Put last Spark method on top of the stack trace.
           } else {
-            firstUserLine = ste.getLineNumber
-            firstUserFile = ste.getFileName
+            if (ste.getFileName != null) {
+              firstUserFile = ste.getFileName
+              if (ste.getLineNumber >= 0) {
+                firstUserLine = ste.getLineNumber
+              }
+            }
             callStack += ste.toString
             insideSpark = false
           }
@@ -1668,8 +1673,8 @@ private[spark] object Utils extends Logging {
   }
 
   /**
-   * NaN-safe version of [[java.lang.Double.compare()]] which allows NaN values to be compared
-   * according to semantics where NaN == NaN and NaN > any non-NaN double.
+   * NaN-safe version of `java.lang.Double.compare()` which allows NaN values to be compared
+   * according to semantics where NaN == NaN and NaN is greater than any non-NaN double.
    */
   def nanSafeCompareDoubles(x: Double, y: Double): Int = {
     val xIsNan: Boolean = java.lang.Double.isNaN(x)
@@ -1682,8 +1687,8 @@ private[spark] object Utils extends Logging {
   }
 
   /**
-   * NaN-safe version of [[java.lang.Float.compare()]] which allows NaN values to be compared
-   * according to semantics where NaN == NaN and NaN > any non-NaN float.
+   * NaN-safe version of `java.lang.Float.compare()` which allows NaN values to be compared
+   * according to semantics where NaN == NaN and NaN is greater than any non-NaN float.
    */
   def nanSafeCompareFloats(x: Float, y: Float): Int = {
     val xIsNan: Boolean = java.lang.Float.isNaN(x)
@@ -2096,15 +2101,41 @@ private[spark] object Utils extends Logging {
     }
   }
 
+  private implicit class Lock(lock: LockInfo) {
+    def lockString: String = {
+      lock match {
+        case monitor: MonitorInfo =>
+          s"Monitor(${lock.getClassName}@${lock.getIdentityHashCode}})"
+        case _ =>
+          s"Lock(${lock.getClassName}@${lock.getIdentityHashCode}})"
+      }
+    }
+  }
+
   /** Return a thread dump of all threads' stacktraces.  Used to capture dumps for the web UI */
   def getThreadDump(): Array[ThreadStackTrace] = {
     // We need to filter out null values here because dumpAllThreads() may return null array
     // elements for threads that are dead / don't exist.
     val threadInfos = ManagementFactory.getThreadMXBean.dumpAllThreads(true, true).filter(_ != null)
     threadInfos.sortBy(_.getThreadId).map { case threadInfo =>
-      val stackTrace = threadInfo.getStackTrace.map(_.toString).mkString("\n")
-      ThreadStackTrace(threadInfo.getThreadId, threadInfo.getThreadName,
-        threadInfo.getThreadState, stackTrace)
+      val monitors = threadInfo.getLockedMonitors.map(m => m.getLockedStackFrame -> m).toMap
+      val stackTrace = threadInfo.getStackTrace.map { frame =>
+        monitors.get(frame) match {
+          case Some(monitor) =>
+            monitor.getLockedStackFrame.toString + s" => holding ${monitor.lockString}"
+          case None =>
+            frame.toString
+        }
+      }.mkString("\n")
+
+      // use a set to dedup re-entrant locks that are held at multiple places
+      val heldLocks = (threadInfo.getLockedSynchronizers.map(_.lockString)
+          ++ threadInfo.getLockedMonitors.map(_.lockString)
+        ).toSet
+
+      ThreadStackTrace(threadInfo.getThreadId, threadInfo.getThreadName, threadInfo.getThreadState,
+        stackTrace, if (threadInfo.getLockOwnerId < 0) None else Some(threadInfo.getLockOwnerId),
+        Option(threadInfo.getLockInfo).map(_.lockString).getOrElse(""), heldLocks.toSeq)
     }
   }
 
@@ -2196,6 +2227,9 @@ private[spark] object Utils extends Logging {
         isBindCollision(e.getCause)
       case e: MultiException =>
         e.getThrowables.asScala.exists(isBindCollision)
+      case e: NativeIoException =>
+        (e.getMessage != null && e.getMessage.startsWith("bind() failed: ")) ||
+          isBindCollision(e.getCause)
       case e: Exception => isBindCollision(e.getCause)
       case _ => false
     }
@@ -2306,8 +2340,9 @@ private[spark] object Utils extends Logging {
    * A spark url (`spark://host:port`) is a special URI that its scheme is `spark` and only contains
    * host and port.
    *
-   * @throws SparkException if `sparkUrl` is invalid.
+   * @throws org.apache.spark.SparkException if sparkUrl is invalid.
    */
+  @throws(classOf[SparkException])
   def extractHostPortFromSparkUrl(sparkUrl: String): (String, Int) = {
     try {
       val uri = new java.net.URI(sparkUrl)
@@ -2513,6 +2548,8 @@ private[util] object CallerContext extends Logging {
   val callerContextSupported: Boolean = {
     SparkHadoopUtil.get.conf.getBoolean("hadoop.caller.context.enabled", false) && {
       try {
+        // `Utils.classForName` will make `ReplSuite` fail with `ClassCircularityError` in
+        // master Maven build, so do not use it before resolving SPARK-17714.
         // scalastyle:off classforname
         Class.forName("org.apache.hadoop.ipc.CallerContext")
         Class.forName("org.apache.hadoop.ipc.CallerContext$Builder")
@@ -2578,6 +2615,8 @@ private[spark] class CallerContext(
   def setCurrentContext(): Unit = {
     if (CallerContext.callerContextSupported) {
       try {
+        // `Utils.classForName` will make `ReplSuite` fail with `ClassCircularityError` in
+        // master Maven build, so do not use it before resolving SPARK-17714.
         // scalastyle:off classforname
         val callerContext = Class.forName("org.apache.hadoop.ipc.CallerContext")
         val builder = Class.forName("org.apache.hadoop.ipc.CallerContext$Builder")

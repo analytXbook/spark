@@ -17,17 +17,18 @@
 
 package org.apache.spark.sql.streaming
 
-import org.apache.spark.sql._
+import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.execution.DataSourceScanExec
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.streaming.{MemoryStream, MetadataLogFileIndex}
+import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 import org.apache.spark.util.Utils
 
 class FileStreamSinkSuite extends StreamTest {
   import testImplicits._
 
-  test("FileStreamSink - unpartitioned writing and batch reading") {
+  test("unpartitioned writing and batch reading") {
     val inputData = MemoryStream[Int]
     val df = inputData.toDF()
 
@@ -59,7 +60,7 @@ class FileStreamSinkSuite extends StreamTest {
     }
   }
 
-  test("FileStreamSink - partitioned writing and batch reading") {
+  test("partitioned writing and batch reading") {
     val inputData = MemoryStream[Int]
     val ds = inputData.toDS()
 
@@ -142,42 +143,105 @@ class FileStreamSinkSuite extends StreamTest {
     }
   }
 
-  test("FileStreamSink - supported formats") {
-    def testFormat(format: Option[String]): Unit = {
-      val inputData = MemoryStream[Int]
-      val ds = inputData.toDS()
+  // This tests whether FileStreamSink works with aggregations. Specifically, it tests
+  // whether the the correct streaming QueryExecution (i.e. IncrementalExecution) is used to
+  // to execute the trigger for writing data to file sink. See SPARK-18440 for more details.
+  test("writing with aggregation") {
 
-      val outputDir = Utils.createTempDir(namePrefix = "stream.output").getCanonicalPath
-      val checkpointDir = Utils.createTempDir(namePrefix = "stream.checkpoint").getCanonicalPath
+    // Since FileStreamSink currently only supports append mode, we will test FileStreamSink
+    // with aggregations using event time windows and watermark, which allows
+    // aggregation + append mode.
+    val inputData = MemoryStream[Long]
+    val inputDF = inputData.toDF.toDF("time")
+    val outputDf = inputDF
+      .selectExpr("CAST(time AS timestamp) AS timestamp")
+      .withWatermark("timestamp", "10 seconds")
+      .groupBy(window($"timestamp", "5 seconds"))
+      .count()
+      .select("window.start", "window.end", "count")
 
-      var query: StreamingQuery = null
+    val outputDir = Utils.createTempDir(namePrefix = "stream.output").getCanonicalPath
+    val checkpointDir = Utils.createTempDir(namePrefix = "stream.checkpoint").getCanonicalPath
 
-      try {
-        val writer =
-          ds.map(i => (i, i * 1000))
-            .toDF("id", "value")
-            .writeStream
-        if (format.nonEmpty) {
-          writer.format(format.get)
-        }
-        query = writer
-            .option("checkpointLocation", checkpointDir)
-            .start(outputDir)
-      } finally {
-        if (query != null) {
-          query.stop()
+    var query: StreamingQuery = null
+
+    try {
+      query =
+        outputDf.writeStream
+          .option("checkpointLocation", checkpointDir)
+          .format("parquet")
+          .start(outputDir)
+
+
+      def addTimestamp(timestampInSecs: Int*): Unit = {
+        inputData.addData(timestampInSecs.map(_ * 1L): _*)
+        failAfter(streamingTimeout) {
+          query.processAllAvailable()
         }
       }
-    }
 
-    testFormat(None) // should not throw error as default format parquet when not specified
-    testFormat(Some("parquet"))
-    val e = intercept[UnsupportedOperationException] {
-      testFormat(Some("text"))
-    }
-    Seq("text", "not support", "stream").foreach { s =>
-      assert(e.getMessage.contains(s))
+      def check(expectedResult: ((Long, Long), Long)*): Unit = {
+        val outputDf = spark.read.parquet(outputDir)
+          .selectExpr(
+            "CAST(start as BIGINT) AS start",
+            "CAST(end as BIGINT) AS end",
+            "count")
+        checkDataset(
+          outputDf.as[(Long, Long, Long)],
+          expectedResult.map(x => (x._1._1, x._1._2, x._2)): _*)
+      }
+
+      addTimestamp(100) // watermark = None before this, watermark = 100 - 10 = 90 after this
+      check() // nothing emitted yet
+
+      addTimestamp(104, 123) // watermark = 90 before this, watermark = 123 - 10 = 113 after this
+      check() // nothing emitted yet
+
+      addTimestamp(140) // wm = 113 before this, emit results on 100-105, wm = 130 after this
+      check((100L, 105L) -> 2L)
+
+      addTimestamp(150) // wm = 130s before this, emit results on 120-125, wm = 150 after this
+      check((100L, 105L) -> 2L, (120L, 125L) -> 1L)
+
+    } finally {
+      if (query != null) {
+        query.stop()
+      }
     }
   }
 
+  test("parquet") {
+    testFormat(None) // should not throw error as default format parquet when not specified
+    testFormat(Some("parquet"))
+  }
+
+  test("text") {
+    testFormat(Some("text"))
+  }
+
+  test("json") {
+    testFormat(Some("json"))
+  }
+
+  def testFormat(format: Option[String]): Unit = {
+    val inputData = MemoryStream[Int]
+    val ds = inputData.toDS()
+
+    val outputDir = Utils.createTempDir(namePrefix = "stream.output").getCanonicalPath
+    val checkpointDir = Utils.createTempDir(namePrefix = "stream.checkpoint").getCanonicalPath
+
+    var query: StreamingQuery = null
+
+    try {
+      val writer = ds.map(i => (i, i * 1000)).toDF("id", "value").writeStream
+      if (format.nonEmpty) {
+        writer.format(format.get)
+      }
+      query = writer.option("checkpointLocation", checkpointDir).start(outputDir)
+    } finally {
+      if (query != null) {
+        query.stop()
+      }
+    }
+  }
 }

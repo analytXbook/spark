@@ -441,6 +441,22 @@ object ScalaReflection extends ScalaReflection {
           val newPath = s"""- array element class: "$clsName"""" +: walkedTypePath
           MapObjects(serializerFor(_, elementType, newPath), input, dt)
 
+         case dt @ (BooleanType | ByteType | ShortType | IntegerType | LongType |
+                    FloatType | DoubleType) =>
+          val cls = input.dataType.asInstanceOf[ObjectType].cls
+          if (cls.isArray && cls.getComponentType.isPrimitive) {
+            StaticInvoke(
+              classOf[UnsafeArrayData],
+              ArrayType(dt, false),
+              "fromPrimitiveArray",
+              input :: Nil)
+          } else {
+            NewInstance(
+              classOf[GenericArrayData],
+              input :: Nil,
+              dataType = ArrayType(dt, schemaFor(elementType).nullable))
+          }
+
         case dt =>
           NewInstance(
             classOf[GenericArrayData],
@@ -587,6 +603,19 @@ object ScalaReflection extends ScalaReflection {
           s"No Encoder found for $tpe\n" + walkedTypePath.mkString("\n"))
     }
 
+  }
+
+  /**
+   * Returns true if the given type is option of product type, e.g. `Option[Tuple2]`. Note that,
+   * we also treat [[DefinedByConstructorParams]] as product type.
+   */
+  def optionOfProductType(tpe: `Type`): Boolean = ScalaReflectionLock.synchronized {
+    tpe match {
+      case t if t <:< localTypeOf[Option[_]] =>
+        val TypeRef(_, _, Seq(optType)) = t
+        definedByConstructorParams(optType)
+      case _ => false
+    }
   }
 
   /**

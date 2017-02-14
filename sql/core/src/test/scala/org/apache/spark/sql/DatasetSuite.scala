@@ -867,10 +867,10 @@ class DatasetSuite extends QueryTest with SharedSQLContext {
     checkDataset(Seq("a", null).toDS(), "a", null)
   }
 
-  test("Dataset should throw RuntimeException if non-flat input object is null") {
+  test("Dataset should throw RuntimeException if top-level product input object is null") {
     val e = intercept[RuntimeException](Seq(ClassData("a", 1), null).toDS())
     assert(e.getMessage.contains("Null value appeared in non-nullable field"))
-    assert(e.getMessage.contains("top level non-flat input object"))
+    assert(e.getMessage.contains("top level Product input object"))
   }
 
   test("dropDuplicates") {
@@ -921,6 +921,52 @@ class DatasetSuite extends QueryTest with SharedSQLContext {
     checkDataset(
       df.withColumn("b", expr("0")).as[ClassData]
         .groupByKey(_.a).flatMapGroups { case (x, iter) => List[Int]() })
+  }
+
+  test("SPARK-18125: Spark generated code causes CompileException") {
+    val data = Array(
+      Route("a", "b", 1),
+      Route("a", "b", 2),
+      Route("a", "c", 2),
+      Route("a", "d", 10),
+      Route("b", "a", 1),
+      Route("b", "a", 5),
+      Route("b", "c", 6))
+    val ds = sparkContext.parallelize(data).toDF.as[Route]
+
+    val grped = ds.map(r => GroupedRoutes(r.src, r.dest, Seq(r)))
+      .groupByKey(r => (r.src, r.dest))
+      .reduceGroups { (g1: GroupedRoutes, g2: GroupedRoutes) =>
+        GroupedRoutes(g1.src, g1.dest, g1.routes ++ g2.routes)
+      }.map(_._2)
+
+    val expected = Seq(
+      GroupedRoutes("a", "d", Seq(Route("a", "d", 10))),
+      GroupedRoutes("b", "c", Seq(Route("b", "c", 6))),
+      GroupedRoutes("a", "b", Seq(Route("a", "b", 1), Route("a", "b", 2))),
+      GroupedRoutes("b", "a", Seq(Route("b", "a", 1), Route("b", "a", 5))),
+      GroupedRoutes("a", "c", Seq(Route("a", "c", 2)))
+    )
+
+    implicit def ordering[GroupedRoutes]: Ordering[GroupedRoutes] = new Ordering[GroupedRoutes] {
+      override def compare(x: GroupedRoutes, y: GroupedRoutes): Int = {
+        x.toString.compareTo(y.toString)
+      }
+    }
+
+    checkDatasetUnorderly(grped, expected: _*)
+  }
+
+  test("SPARK-18189: Fix serialization issue in KeyValueGroupedDataset") {
+    val resultValue = 12345
+    val keyValueGrouped = Seq((1, 2), (3, 4)).toDS().groupByKey(_._1)
+    val mapGroups = keyValueGrouped.mapGroups((k, v) => (k, 1))
+    val broadcasted = spark.sparkContext.broadcast(resultValue)
+
+    // Using broadcast triggers serialization issue in KeyValueGroupedDataset
+    val dataset = mapGroups.map(_ => broadcasted.value)
+
+    assert(dataset.collect() sameElements Array(resultValue, resultValue))
   }
 
   Seq(true, false).foreach { eager =>
@@ -986,6 +1032,43 @@ class DatasetSuite extends QueryTest with SharedSQLContext {
 
       checkAnswer(agg, ds.groupBy('id % 2).agg(count('id)))
     }
+  }
+
+  test("identity map for primitive arrays") {
+    val arrayByte = Array(1.toByte, 2.toByte, 3.toByte)
+    val arrayInt = Array(1, 2, 3)
+    val arrayLong = Array(1.toLong, 2.toLong, 3.toLong)
+    val arrayDouble = Array(1.1, 2.2, 3.3)
+    val arrayString = Array("a", "b", "c")
+    val dsByte = sparkContext.parallelize(Seq(arrayByte), 1).toDS.map(e => e)
+    val dsInt = sparkContext.parallelize(Seq(arrayInt), 1).toDS.map(e => e)
+    val dsLong = sparkContext.parallelize(Seq(arrayLong), 1).toDS.map(e => e)
+    val dsDouble = sparkContext.parallelize(Seq(arrayDouble), 1).toDS.map(e => e)
+    val dsString = sparkContext.parallelize(Seq(arrayString), 1).toDS.map(e => e)
+    checkDataset(dsByte, arrayByte)
+    checkDataset(dsInt, arrayInt)
+    checkDataset(dsLong, arrayLong)
+    checkDataset(dsDouble, arrayDouble)
+    checkDataset(dsString, arrayString)
+  }
+
+  test("SPARK-18251: the type of Dataset can't be Option of Product type") {
+    checkDataset(Seq(Some(1), None).toDS(), Some(1), None)
+
+    val e = intercept[UnsupportedOperationException] {
+      Seq(Some(1 -> "a"), None).toDS()
+    }
+    assert(e.getMessage.contains("Cannot create encoder for Option of Product type"))
+  }
+
+  test ("SPARK-17460: the sizeInBytes in Statistics shouldn't overflow to a negative number") {
+    // Since the sizeInBytes in Statistics could exceed the limit of an Int, we should use BigInt
+    // instead of Int for avoiding possible overflow.
+    val ds = (0 to 10000).map( i =>
+      (i, Seq((i, Seq((i, "This is really not that long of a string")))))).toDS()
+    val sizeInBytes = ds.logicalPlan.statistics.sizeInBytes
+    // sizeInBytes is 2404280404, before the fix, it overflows to a negative number
+    assert(sizeInBytes > 0)
   }
 }
 
@@ -1059,3 +1142,6 @@ object DatasetTransform {
     ds.map(_ + 1)
   }
 }
+
+case class Route(src: String, dest: String, cost: Int)
+case class GroupedRoutes(src: String, dest: String, routes: Seq[Route])

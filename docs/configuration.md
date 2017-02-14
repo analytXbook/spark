@@ -572,7 +572,8 @@ Apart from these, the following properties are also available, and may be useful
   <td><code>spark.io.encryption.enabled</code></td>
   <td>false</td>
   <td>
-    Enable IO encryption. Only supported in YARN mode.
+    Enable IO encryption. Currently supported by all modes except Mesos. It's recommended that RPC encryption
+    be enabled when using this feature.
   </td>
 </tr>
 <tr>
@@ -1035,6 +1036,22 @@ Apart from these, the following properties are also available, and may be useful
   </td>
 </tr>
 <tr>
+  <td><code>spark.files.maxPartitionBytes</code></td>
+  <td>134217728 (128 MB)</td>
+  <td>
+    The maximum number of bytes to pack into a single partition when reading files.
+  </td>
+</tr>
+<tr>
+  <td><code>spark.files.openCostInBytes</code></td>
+  <td>4194304 (4 MB)</td>
+  <td>
+    The estimated cost to open a file, measured by the number of bytes could be scanned in the same
+    time. This is used when putting multiple files into a partition. It is better to over estimate,
+    then the partitions with small files will be faster than partitions with bigger files.
+  </td>
+</tr>
+<tr>
     <td><code>spark.hadoop.cloneConf</code></td>
     <td>false</td>
     <td>If set to true, clones a new Hadoop <code>Configuration</code> object for each task.  This
@@ -1159,7 +1176,7 @@ Apart from these, the following properties are also available, and may be useful
 </tr>
 <tr>
   <td><code>spark.rpc.askTimeout</code></td>
-  <td>120s</td>
+  <td><code>spark.network.timeout</code></td>
   <td>
     Duration for an RPC ask operation to wait before timing out.
   </td>
@@ -1515,7 +1532,7 @@ Apart from these, the following properties are also available, and may be useful
 </tr>
 <tr>
   <td><code>spark.core.connection.ack.wait.timeout</code></td>
-  <td>60s</td>
+  <td><code>spark.network.timeout</code></td>
   <td>
     How long for the connection to wait for ack to occur before timing
     out and giving up. To avoid unwilling timeout caused by long pause like GC,
@@ -1900,7 +1917,7 @@ showDF(properties, numRows = 200, truncate = FALSE)
   <td><code>spark.r.heartBeatInterval</code></td>
   <td>100</td>
   <td>
-    Interval for heartbeats sents from SparkR backend to R process to prevent connection timeout.
+    Interval for heartbeats sent from SparkR backend to R process to prevent connection timeout.
   </td>
 </tr>
 
