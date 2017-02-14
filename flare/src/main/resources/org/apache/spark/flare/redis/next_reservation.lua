@@ -62,7 +62,7 @@ local fair_comparator = function(p1, p2)
 	elseif p1_needy and p2_needy then
 		compare = (p1_active_tasks / math.max(p1_min_share, 1)) - (p2_active_tasks / math.max(p2_min_share, 1))
 	else
-		compare = (p1_active_tasks * (p1.weight or 1)) - (p2_active_tasks * (p2.weight or 1))
+		compare = (p1_active_tasks / (p1.weight or 1)) - (p2_active_tasks / (p2.weight or 1))
 	end
 
 	if compare < 0 then

@@ -25,7 +25,8 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
   
   val listenerBus = sc.listenerBus
 
-  val executorsPendingLossReason = new mutable.HashSet[String]
+  private val executorsPendingToRemove = new mutable.HashMap[String, Boolean]
+  private val executorsPendingLossReason = new mutable.HashSet[String]
   val executors = new mutable.HashMap[String, FlareExecutorInfo]
   
   // val akkaFrameSize = AkkaUtils.maxFrameSizeBytes(conf)
