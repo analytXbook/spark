@@ -30,24 +30,22 @@ private[spark] class FlareBlockManagerProxy(
   }
 
   var capturedRegistration: Option[RegisterBlockManager] = None
+  var driverUpdatedBlockManager: Option[BlockManagerId] = None
+
   val registeredDrivers = mutable.Set.empty[Int]
 
-  private def registerWithDriver(driverId: Int, driverRef: RpcEndpointRef): Future[Boolean] = {
+  private def registerWithDriver(driverId: Int, driverRef: RpcEndpointRef): Future[BlockManagerId] = {
     logInfo(s"Registering with driver $driverId block manager")
 
     val future = capturedRegistration match {
-      case Some(slaveRegistrationMsg) => driverRef.ask[Boolean](slaveRegistrationMsg)
+      case Some(slaveRegistrationMsg) => driverRef.ask[BlockManagerId](slaveRegistrationMsg)
       case None => Future.failed(new SparkException("Attempted to register with driver before receiving RegisterBlockManager message from executor"))
     }
 
     future.onComplete {
-      case Success(registered) =>
-        if (registered) {
-          registeredDrivers.add(driverId)
-          logInfo(s"Registered block manager with driver $driverId")
-        }
-        else
-          logError(s"Unable to register block manager with driver $driverId")
+      case Success(blockManagerId) =>
+        registeredDrivers.add(driverId)
+        logInfo(s"Registered block manager with driver $driverId")
       case Failure(error) =>
         logError(s"Failed to register block manager with driver $driverId", error)
     }
@@ -65,7 +63,19 @@ private[spark] class FlareBlockManagerProxy(
         rpcEnv.setupEndpoint(slaveEndpoint.name, this)
 
         logInfo(s"Registering with all known drivers")
-        driverRefs.foreach{ case (driverId, driverRef) => registerWithDriver(driverId, driverRef)}
+        driverRefs.foreach { case (driverId, driverRef) =>
+          registerWithDriver(driverId, driverRef).onComplete {
+            case Success(driverBlockManagerId) => {
+              if (driverUpdatedBlockManager.isEmpty) {
+                driverUpdatedBlockManager = Some(driverBlockManagerId)
+                context.reply(driverBlockManagerId)
+              }
+            }
+            case Failure(error) => {
+              //todo blacklist executor/driver combination
+            }
+          }
+        }
       } else {
         logInfo("Already initialized and asked to register with driver")
         val pendingDrivers = driverRefs.keySet.diff(registeredDrivers)
@@ -79,7 +89,6 @@ private[spark] class FlareBlockManagerProxy(
           }
         }
       }
-      context.reply(true)
     }
 
     case _updateBlockInfo @ UpdateBlockInfo(
