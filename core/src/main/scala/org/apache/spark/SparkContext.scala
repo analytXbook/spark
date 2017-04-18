@@ -215,7 +215,6 @@ class SparkContext(config: SparkConf) extends Logging {
   private var _jars: Seq[String] = _
   private var _files: Seq[String] = _
   private var _shutdownHookRef: AnyRef = _
-  private var _encodedIdData: Option[Int] = None
 
   /* ------------------------------------------------------------------------------------- *
    | Accessors and public fields. These provide access to the internal state of the        |
@@ -613,13 +612,6 @@ class SparkContext(config: SparkConf) extends Logging {
         logError(s"Exception getting thread dump from executor $executorId", e)
         None
     }
-  }
-
-  private[spark] def getEncodedIdData: Option[Int] = _encodedIdData
-
-  private[spark] def setEncodedIdData(data: Int) = {
-    _encodedIdData = Some(data)
-    _conf.set("encodedIdData", data.toString())
   }
 
   private[spark] def getLocalProperties: Properties = localProperties.get()
@@ -2142,11 +2134,11 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   def defaultMinPartitions: Int = math.min(defaultParallelism, 2)
 
-  private val shuffleIdGenerator = IntegerIdGenerator(this)
+  private val shuffleIdGenerator = IdGenerator.int("shuffle")
 
   private[spark] def newShuffleId(): Int = shuffleIdGenerator.next
 
-  private val rddIdGenerator = IntegerIdGenerator(this)
+  private val rddIdGenerator = IdGenerator.int("rdd")
 
   /** Register a new RDD, returning its RDD ID */
   private[spark] def newRddId(): Int = rddIdGenerator.next

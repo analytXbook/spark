@@ -17,14 +17,10 @@
 
 package org.apache.spark.broadcast
 
-import java.util.concurrent.atomic.AtomicLong
-
-import org.apache.spark.util.LongIdGenerator
-
 import scala.reflect.ClassTag
-
 import org.apache.spark.{SecurityManager, SparkConf}
 import org.apache.spark.internal.Logging
+import org.apache.spark.util.IdGenerator
 
 private[spark] class BroadcastManager(
     val isDriver: Boolean,
@@ -52,7 +48,7 @@ private[spark] class BroadcastManager(
     broadcastFactory.stop()
   }
 
-  private val nextBroadcastId = LongIdGenerator(conf)
+  private val nextBroadcastId = IdGenerator.long("broadcast")
 
   def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean): Broadcast[T] = {
     broadcastFactory.newBroadcast[T](value_, isLocal, nextBroadcastId.next())

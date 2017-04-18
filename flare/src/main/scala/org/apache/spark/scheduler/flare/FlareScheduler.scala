@@ -30,7 +30,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
 
   val managersByStageIdAndAttempt = new mutable.HashMap[Int, mutable.HashMap[Int, FlareReservationManager]]
   
-  val taskIdGenerator = LongIdGenerator(sc)
+  val taskIdGenerator = IdGenerator.long("task")
   
   def newTaskId = taskIdGenerator.next
   
@@ -46,7 +46,6 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
   val executorToHost = new mutable.HashMap[String, String]
 
   private val executorIdToRunningTaskIds = new mutable.HashMap[String, mutable.HashSet[Long]]
-
 
   private val localityWaitScheduler =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("task-locality-wait-scheduler")

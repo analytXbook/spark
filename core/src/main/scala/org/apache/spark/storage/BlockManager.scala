@@ -19,6 +19,7 @@ package org.apache.spark.storage
 
 import java.io._
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.mutable
 import scala.collection.mutable.HashMap
@@ -27,7 +28,6 @@ import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.util.Random
 import scala.util.control.NonFatal
-
 import org.apache.spark._
 import org.apache.spark.executor.{DataReadMethod, ShuffleWriteMetrics}
 import org.apache.spark.internal.Logging
@@ -136,7 +136,7 @@ private[spark] class BlockManager(
     conf.getInt("spark.block.failures.beforeLocationRefresh", 5)
 
   private val slaveEndpoint = rpcEnv.setupEndpoint(
-    "BlockManagerEndpoint" + BlockManager.ID_GENERATOR.next,
+    "BlockManagerEndpoint" + BlockManager.ID_GENERATOR.getAndIncrement(),
     new BlockManagerSlaveEndpoint(rpcEnv, this, mapOutputTracker))
 
   // Pending re-registration action being executed asynchronously or null if none is pending.
@@ -1369,7 +1369,7 @@ private[spark] class BlockManager(
 
 
 private[spark] object BlockManager {
-  private val ID_GENERATOR = IntegerIdGenerator()
+  private val ID_GENERATOR = new AtomicInteger()
 
   def blockIdsToHosts(
       blockIds: Array[BlockId],

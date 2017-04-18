@@ -19,43 +19,42 @@ package org.apache.spark.util
 
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 
-import org.apache.spark.{SparkConf, SparkContext}
+import scala.collection.mutable
 
-private[spark] sealed trait IdGenerator[T] {
+trait IdGenerator[T] {
   def next(): T
 }
 
-private object IdGenerator {
-  def getData(conf: SparkConf) = conf.getOption("encodedIdData").map(_.toInt)
-  def getData(sc: SparkContext) = sc.getEncodedIdData
-}
+object IdGenerator {
+  private var source: IdSource = IdSource.default
 
-private[spark] class LongIdGenerator(data: => Option[Int] = None) extends IdGenerator[Long] {
-  val value = new AtomicLong()
-  override def next(): Long = {
-    def nextValue = value.getAndIncrement()
-    data.fold(nextValue)(EncodedId(nextValue, _))
+  def setSource(source: IdSource) = {
+    this.source = source
+  }
+
+  def int(idGroup: String) = new IdGenerator[Int] {
+    override def next(): Int = source.nextInt(idGroup)
+  }
+
+  def long(idGroup: String) = new IdGenerator[Long] {
+    override def next(): Long = source.nextLong(idGroup)
   }
 }
 
-private[spark] object LongIdGenerator {
-  def apply(): LongIdGenerator = new LongIdGenerator()
-
-  def apply(conf: SparkConf): LongIdGenerator = new LongIdGenerator(IdGenerator.getData(conf))
-  def apply(sc: SparkContext): LongIdGenerator = new LongIdGenerator(IdGenerator.getData(sc))
+trait IdSource {
+  def nextInt(idGroup: String): Int
+  def nextLong(idGroup: String): Long
 }
 
-private[spark] class IntegerIdGenerator(data: => Option[Int] = None) extends IdGenerator[Int] {
-  val value = new AtomicInteger()
-  override def next(): Int = {
-    def nextValue = value.getAndIncrement()
-    data.fold(nextValue)(EncodedId(nextValue, _))
+object IdSource {
+  def default = new IdSource {
+    val longCounters = mutable.Map[String, AtomicLong]()
+    val intCounters = mutable.Map[String, AtomicInteger]()
+
+    override def nextInt(idGroup: String): Int =
+      intCounters.getOrElseUpdate(idGroup, new AtomicInteger()).getAndIncrement()
+
+    override def nextLong(idGroup: String): Long =
+      longCounters.getOrElseUpdate(idGroup, new AtomicLong()).getAndIncrement()
   }
-}
-
-private[spark] object IntegerIdGenerator {
-  def apply(): IntegerIdGenerator = new IntegerIdGenerator()
-
-  def apply(conf: SparkConf): IntegerIdGenerator = new IntegerIdGenerator(IdGenerator.getData(conf))
-  def apply(sc: SparkContext): IntegerIdGenerator = new IntegerIdGenerator(IdGenerator.getData(sc))
 }

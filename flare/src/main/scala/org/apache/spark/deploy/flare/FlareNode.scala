@@ -6,7 +6,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 
 import org.apache.spark.deploy.ExecutorState
-import org.apache.spark.executor.flare.{RedisFlarePoolBackendConfiguration, RedisLuaFlarePoolBackend}
 
 import scala.collection.mutable.HashMap
 import org.apache.spark.internal.Logging
@@ -45,8 +44,7 @@ private[spark] class FlareNode(
   private val metricsSystem = MetricsSystem.createMetricsSystem("flare-node", clusterConf.sparkConf, securityManager)
   private val nodeSource = new FlareNodeSource(this)
 
-  private val poolBackendConf = RedisFlarePoolBackendConfiguration(args.redisHost)
-  private val poolBackend = new RedisLuaFlarePoolBackend(poolBackendConf)
+  private val redis = new FlareRedisClient(FlareRedisConfiguration(args.redisHost))
 
   private def createWorkDir() {
     workDir = workDirPath.map(new File(_)).getOrElse(new File(sparkHome, "work"))
@@ -66,7 +64,7 @@ private[spark] class FlareNode(
   
   private def joinCluster() = {
     cluster.addListener(this)
-    cluster.start(NodeClusterProfile(nodeId, args.hostname, poolBackend))
+    cluster.start(NodeClusterProfile(nodeId, args.hostname, redis))
     executorIdCounter = cluster.counter("executorId")
   }
 
@@ -170,7 +168,7 @@ private[spark] class FlareNode(
 
   def shutdown() = {
     terminateExecutors()
-    poolBackend.close()
+    redis.close()
     cluster.close()
     logInfo("Shutdown complete")
   }

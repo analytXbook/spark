@@ -10,8 +10,9 @@ import scala.util.{Failure, Success}
 
 private[spark] class FlareHeartbeatProxy(
     cluster: FlareCluster,
+    idBackend: FlareIdBackend,
     override val rpcEnv: RpcEnv)
-  extends FlareDriverProxyEndpoint(HeartbeatReceiver.ENDPOINT_NAME, cluster) with Logging {
+  extends FlareDriverProxyEndpoint(HeartbeatReceiver.ENDPOINT_NAME, cluster, idBackend) with Logging {
   
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
     case Heartbeat(executorId, taskMetrics, blockManagerId) => {
@@ -23,7 +24,7 @@ private[spark] class FlareHeartbeatProxy(
           //before it can be forwarded to the driver, the flag needs to be set to false so that
           //it doesn't check to see if the accumulator is registered while serializing out.
           metrics.foreach( _.atDriverSide = false )
-          driverId(taskId)
+          driverId(taskId, "task")
       }).withDefaultValue(Array[(Long, Seq[AccumulatorV2[_, _]])]())
       
       driverRefs.foreach {
