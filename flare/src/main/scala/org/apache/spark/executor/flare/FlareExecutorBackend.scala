@@ -14,7 +14,7 @@ import org.apache.spark.scheduler.TaskDescription
 import org.apache.spark.scheduler.flare.FlareMessages._
 import org.apache.spark.scheduler.flare._
 import org.apache.spark.serializer.SerializerInstance
-import org.apache.spark.storage.BlockManagerMaster
+import org.apache.spark.storage._
 import org.apache.spark.util.{ShutdownHookManager, SignalUtils, ThreadUtils}
 import org.apache.spark.internal.Logging
 
@@ -156,6 +156,25 @@ private[spark] class FlareExecutorBackend(
 
   override def onDisconnected(remoteAddress: RpcAddress): Unit = {
 
+  }
+
+  override def onDriverExited(driver: DriverData): Unit = {
+    val driverId = driver.driverId
+
+    val blocksToRemove = env.blockManager.getMatchingBlockIds { blockId =>
+      blockId match {
+        case RDDBlockId(rddId, _) => idBackend.lookupDriver(rddId, "rdd", true) == driverId
+        case ShuffleBlockId(shuffleId, _, _) => idBackend.lookupDriver(shuffleId, "shuffle", true) == driverId
+        case ShuffleDataBlockId(shuffleId, _, _) => idBackend.lookupDriver(shuffleId, "shuffle", true) == driverId
+        case ShuffleIndexBlockId(shuffleId, _, _) => idBackend.lookupDriver(shuffleId, "shuffle", true) == driverId
+        case BroadcastBlockId(broadcastId, _) => idBackend.lookupDriver(broadcastId, "broadcast", false) == driverId
+        case TaskResultBlockId(taskId) => idBackend.lookupDriver(taskId, "task", false) == driverId
+        case StreamBlockId(streamId, _ ) => idBackend.lookupDriver(streamId, "stream", true) == driverId
+        case _ => false
+      }
+    }
+
+    blocksToRemove.foreach(env.blockManager.removeBlock(_, false))
   }
   
   override def statusUpdate(taskId: Long, state: TaskState.TaskState, data: ByteBuffer) = {
