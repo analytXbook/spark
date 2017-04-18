@@ -10,15 +10,16 @@ import scala.util.{Failure, Success}
 
 private[spark] class FlareSchedulerProxy(
     cluster: FlareCluster,
+    idBackend: FlareIdBackend,
     override val rpcEnv: RpcEnv)
-  extends FlareDriverProxyEndpoint(FlareSchedulerBackend.ENDPOINT_NAME, cluster) with Logging {
+  extends FlareDriverProxyEndpoint(FlareSchedulerBackend.ENDPOINT_NAME, cluster, idBackend) with Logging {
 
   var executorRef: RpcEndpointRef = _
   var registerMsg: RegisterExecutor = _
 
   override def receive: PartialFunction[Any, Unit] = {
     case _statusUpdate @ StatusUpdate(executorId, taskId, state, data) => {
-      driverRefs.get(driverId(taskId)).map(_.send(_statusUpdate))
+      driverRefs.get(driverId(taskId, "task")).map(_.send(_statusUpdate))
     }
     case reservation: FlareReservation => {
       executorRef.send(reservation)
@@ -55,6 +56,9 @@ private[spark] class FlareSchedulerProxy(
           registerWithDriver(driverId, driverRef)
         }
       }
+    }
+    case allocateIds: AllocateIds => {
+      pipe(allocateIds, executorRef, context)
     }
     case _redeemReservation @ RedeemReservation(reservationId, _, _) => {
       pipe(_redeemReservation, driverRefs(reservationId.driverId), context)

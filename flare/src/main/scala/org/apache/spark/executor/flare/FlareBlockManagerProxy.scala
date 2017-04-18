@@ -13,18 +13,19 @@ import scala.util.{Failure, Success}
 
 private[spark] class FlareBlockManagerProxy(
     cluster: FlareCluster,
+    idBackend: FlareIdBackend,
     override val rpcEnv: RpcEnv)
-  extends FlareDriverProxyEndpoint(BlockManagerMaster.DRIVER_ENDPOINT_NAME, cluster) with Logging {
+  extends FlareDriverProxyEndpoint(BlockManagerMaster.DRIVER_ENDPOINT_NAME, cluster, idBackend) with Logging {
   
   def driverIdFromBlockId(blockId: BlockId): Int = {
     blockId match {
-      case RDDBlockId(rddId, _) => driverId(rddId)
-      case ShuffleBlockId(shuffleId, _, _) => driverId(shuffleId)
-      case ShuffleDataBlockId(shuffleId, _, _) => driverId(shuffleId)
-      case ShuffleIndexBlockId(shuffleId, _, _) => driverId(shuffleId)
-      case BroadcastBlockId(broadcastId, _) => driverId(broadcastId)
-      case TaskResultBlockId(taskId) => driverId(taskId)
-      case StreamBlockId(streamId, _) => driverId(streamId)
+      case RDDBlockId(rddId, _) => driverId(rddId, "rdd")
+      case ShuffleBlockId(shuffleId, _, _) => driverId(shuffleId, "shuffle")
+      case ShuffleDataBlockId(shuffleId, _, _) => driverId(shuffleId, "shuffle")
+      case ShuffleIndexBlockId(shuffleId, _, _) => driverId(shuffleId, "shuffle")
+      case BroadcastBlockId(broadcastId, _) => driverId(broadcastId, "broadcast")
+      case TaskResultBlockId(taskId) => driverId(taskId, "task")
+      case StreamBlockId(streamId, _) => driverId(streamId, "stream")
       case _ => throw new SparkException(s"Unknown blockId type: $blockId")
     }
   }

@@ -2,7 +2,7 @@ package org.apache.spark.executor.flare
 
 import org.apache.spark.flare._
 import org.apache.spark.rpc.{RpcAddress, RpcCallContext, RpcEndpointRef, ThreadSafeRpcEndpoint}
-import org.apache.spark.util.{EncodedId, ThreadUtils}
+import org.apache.spark.util.ThreadUtils
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 
@@ -10,7 +10,7 @@ import scala.collection.mutable.HashMap
 import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
 
-private[spark] abstract class FlareDriverProxyEndpoint(endpointName: String, cluster: FlareCluster) extends ThreadSafeRpcEndpoint with FlareClusterListener with Logging{
+private[spark] abstract class FlareDriverProxyEndpoint(endpointName: String, cluster: FlareCluster, idBackend: FlareIdBackend) extends ThreadSafeRpcEndpoint with FlareClusterListener with Logging{
   protected implicit val ec = FlareDriverProxyEndpoint.executionContext
   
   protected val driverRefs = new HashMap[Int, RpcEndpointRef]()
@@ -43,8 +43,8 @@ private[spark] abstract class FlareDriverProxyEndpoint(endpointName: String, clu
     driverRefs.remove(data.driverId)
   }
   
-  protected def driverId(encodedId: Long) = EncodedId.decode(encodedId)._1
-  protected def driverId(encodedId: Int) = EncodedId.decode(encodedId)._1
+  protected def driverId(id: Long, idGroup: String) = idBackend.lookupDriver(id, idGroup, false)
+  protected def driverId(id: Int, idGroup: String) = idBackend.lookupDriver(id, idGroup, true)
 }
 
 private[spark] object FlareDriverProxyEndpoint {

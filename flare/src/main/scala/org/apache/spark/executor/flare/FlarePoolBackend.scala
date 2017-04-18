@@ -1,20 +1,19 @@
 package org.apache.spark.executor.flare
 
-import scala.language.implicitConversions
+import org.apache.spark.flare.FlareRedisClient
 
+import scala.language.implicitConversions
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.flare.{FlarePoolDescription, FlareReservationId}
 import org.json4s._
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
-import redis.clients.jedis.{Jedis, JedisPool, ZParams}
 
 import scala.collection.JavaConversions._
-import scala.collection.mutable
-import scala.io.Source
+
 
 trait FlarePoolBackend {
-  def initialize(executorId: String): Unit
+  def init(executorId: String): Unit
   def addReservation(reservationId: FlareReservationId, count: Int, groups: Seq[FlarePoolDescription]): Unit
   def removeReservation(reservationId: FlareReservationId): Unit
   def taskLaunched(reservationId: FlareReservationId): Unit
@@ -22,62 +21,26 @@ trait FlarePoolBackend {
   def taskFinished(reservationId: FlareReservationId): Unit
   def nextReservation(): Option[FlareReservationId]
   def reset(): Unit
-  def close(): Unit
 }
 
-case class RedisFlarePoolBackendConfiguration(host: String)
-
-class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration) extends FlarePoolBackend with Logging {
-  private val jedisPool = new JedisPool(conf.host)
-
-  private def loadScript(scriptName: String): Unit = {
-    val source = Source.fromInputStream(getClass.getResourceAsStream(s"/org/apache/spark/flare/redis/$scriptName.lua"))
-    val script = source.mkString
-    scriptSHA(scriptName) = withJedis(_.scriptLoad(script))
-  }
-
-  private val scriptSHA = mutable.Map[String, String]()
-
-  private def withJedis[A](f: Jedis => A): A = {
-    val jedis = jedisPool.getResource
-    try {
-      f(jedis)
-    } finally {
-      if (jedis != null) {
-        jedis.close()
-      }
-    }
-  }
-
-  private def evalScript(scriptName: String, args: String*): AnyRef = {
-    try {
-      withJedis(_.evalsha(scriptSHA(scriptName), 0, args: _*))
-    } catch {
-      case ex: Exception =>
-        throw new RuntimeException(s"Failed to run script '$scriptName', args = (${args.mkString(" ")})", ex)
-    }
-  }
+class RedisFlarePoolBackend(redis: FlareRedisClient) extends FlarePoolBackend with Logging {
 
   private var executorId: Option[String] = None
 
-  override def initialize(executorId: String): Unit = {
+  override def init(executorId: String): Unit = {
     this.executorId = Some(executorId)
 
-    loadScript("add_reservation")
-    loadScript("remove_reservation")
-    loadScript("next_reservation")
-    loadScript("task_launched")
-    loadScript("task_rejected")
-    loadScript("task_finished")
+    redis.loadScript("add_reservation")
+    redis.loadScript("remove_reservation")
+    redis.loadScript("next_reservation")
+    redis.loadScript("task_launched")
+    redis.loadScript("task_rejected")
+    redis.loadScript("task_finished")
   }
 
   override def reset(): Unit = {
     logInfo("Flushing redis pool backend")
-    withJedis(_.flushDB())
-  }
-
-  override def close(): Unit = {
-    jedisPool.destroy()
+    redis.withJedis(_.flushDB())
   }
 
   implicit def writePoolDescription(pool: FlarePoolDescription): JValue = {
@@ -88,7 +51,7 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration) extends
   }
 
   override def addReservation(reservationId: FlareReservationId, count: Int, groups: Seq[FlarePoolDescription]): Unit = {
-    evalScript("add_reservation",
+    redis.evalScript("add_reservation",
       executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized")),
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
@@ -98,7 +61,7 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration) extends
   }
 
   override def removeReservation(reservationId: FlareReservationId): Unit = {
-    evalScript("remove_reservation",
+    redis.evalScript("remove_reservation",
       executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized")),
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
@@ -106,14 +69,14 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration) extends
   }
 
   override def nextReservation(): Option[FlareReservationId] = {
-    Option(evalScript("next_reservation",
+    Option(redis.evalScript("next_reservation",
       executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized"))))
       .map(_.asInstanceOf[java.util.List[String]])
       .map(result => FlareReservationId(result(0).toInt, result(1).toInt, result(2).toInt))
   }
 
   override def taskRejected(reservationId: FlareReservationId): Unit = {
-    evalScript("task_rejected",
+    redis.evalScript("task_rejected",
       executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized")),
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
@@ -122,7 +85,7 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration) extends
   }
 
   override def taskLaunched(reservationId: FlareReservationId): Unit = {
-    evalScript("task_launched",
+    redis.evalScript("task_launched",
       executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized")),
       reservationId.stageId.toString,
       reservationId.attemptId.toString,
@@ -131,7 +94,7 @@ class RedisLuaFlarePoolBackend(conf: RedisFlarePoolBackendConfiguration) extends
   }
 
   override def taskFinished(reservationId: FlareReservationId): Unit = {
-    evalScript("task_finished",
+    redis.evalScript("task_finished",
       executorId.getOrElse(throw new RuntimeException("Pool backend has not been initialized")),
       reservationId.stageId.toString,
       reservationId.attemptId.toString,

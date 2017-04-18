@@ -137,7 +137,7 @@ class DAGScheduler(
 
   private[scheduler] val nextJobId = new AtomicInteger(0)
   private[scheduler] def numTotalJobs: Int = nextJobId.get()
-  private val stageIdGenerator = IntegerIdGenerator(sc)
+  private val stageIdGenerator = IdGenerator.int("stage")
 
   private[scheduler] val jobIdToStageIds = new HashMap[Int, HashSet[Int]]
   private[scheduler] val stageIdToStage = new HashMap[Int, Stage]

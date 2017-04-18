@@ -5,10 +5,11 @@ import org.apache.spark.flare.{FlareCluster, _}
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
 import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.flare.FlareMessages._
-import org.apache.spark.util.{EncodedId, SerializableBuffer}
+import org.apache.spark.util.{IdGenerator, SerializableBuffer}
 import org.apache.spark.internal.Logging
 
 import scala.collection.mutable
+import scala.concurrent.Future
 
 private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: String)
   extends SchedulerBackend with FlareClusterListener with Logging {
@@ -46,7 +47,11 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
   override def applicationId(): String = {
     cluster.appId
   }
-  
+
+  def allocateIds(idGroup: String, isInt: Boolean): Future[FlareIdRange] = {
+    executors.head._2.executorEndpoint.ask[FlareIdRange](AllocateIds(idGroup, isInt, driverId))
+  }
+
   def placeReservations(
     stageId: Int,
     stageAttemptId: Int,
@@ -186,7 +191,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
       case _ => throw new SparkException("Expected local data to be set to driver data")
     }
 
-    sc.setEncodedIdData(driverId)
+    IdGenerator.setSource(new FlareIdSource(this))
   }
   
   override def stop() {

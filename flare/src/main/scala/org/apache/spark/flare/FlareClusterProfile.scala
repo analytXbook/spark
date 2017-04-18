@@ -14,7 +14,7 @@ sealed trait FlareClusterProfile {
     throw new UnsupportedOperationException("Only nodes can reset the cluster state")
 }
 
-case class NodeClusterProfile(nodeId: String, hostname: String, poolBackend: FlarePoolBackend) extends FlareClusterProfile with Logging {
+case class NodeClusterProfile(nodeId: String, hostname: String, redis: FlareRedisClient) extends FlareClusterProfile with Logging {
   override def start(cluster: FlareCluster): Unit = {
     val zk = cluster.zk
     val initializationBarrier = new DistributedBarrier(zk, "/init/barrier")
@@ -22,8 +22,8 @@ case class NodeClusterProfile(nodeId: String, hostname: String, poolBackend: Fla
       logInfo("No drivers found")
       initializationBarrier.setBarrier()
 
-      logInfo("Resetting pool backend")
-      poolBackend.reset()
+      logInfo("Flushing Redis")
+      redis.flushAll()
 
       if (cluster.nodes.isEmpty) {
         if (zk.checkExists.forPath("/reset") != null) {
@@ -76,9 +76,6 @@ case class NodeClusterProfile(nodeId: String, hostname: String, poolBackend: Fla
     resetBarrier.waitOnBarrier()
 
     resetLeader.close()
-
-    logInfo("Resetting pool backend")
-    poolBackend.reset()
 
     logInfo("Waiting for drivers")
     initializationBarrier.waitOnBarrier()
