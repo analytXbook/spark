@@ -147,7 +147,7 @@ private[spark] class FlareExecutorBackend(
   def shutdown(): Unit = {
     logInfo("Shutting down")
     executor.stop()
-    stop()
+    this.stop()
     rpcEnv.shutdown()
     proxyRpcEnv.shutdown()
     redis.close()
