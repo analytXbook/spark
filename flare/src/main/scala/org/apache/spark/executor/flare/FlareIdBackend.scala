@@ -41,7 +41,8 @@ class RedisFlareIdBackend(redis: FlareRedisClient) extends FlareIdBackend with L
     idCache(idGroup).get(rangeEnd) match {
       case Some(driverId) => driverId
       case None => {
-        val driverId = redis.evalScript("lookup_ids", idGroup, rangeEnd.toString).asInstanceOf[Int]
+        logDebug(s"Looking up driver for $idGroup $id")
+        val driverId = redis.evalScript("lookup_ids", idGroup, rangeEnd.toString).asInstanceOf[Long].toInt
         idCache(idGroup).putIfAbsent(rangeEnd, driverId)
         driverId
       }
@@ -49,9 +50,10 @@ class RedisFlareIdBackend(redis: FlareRedisClient) extends FlareIdBackend with L
   }
 
   def allocateIds(driverId: Int, idGroup: String, isInt: Boolean): FlareIdRange = {
-    val result = redis.evalScript("allocate_ids", driverId.toString, idGroup, isInt.toString, RANGE_SIZE.toString).asInstanceOf[java.util.List[String]]
-    val range = FlareIdRange(result(0).toLong, result(1).toLong)
+    val result = redis.evalScript("allocate_ids", driverId.toString, idGroup, isInt.toString, RANGE_SIZE.toString).asInstanceOf[java.util.List[Long]]
+    val range = FlareIdRange(result(0), result(1))
     idCache(idGroup).putIfAbsent(range.end, driverId)
+    logDebug(s"Allocated ids for driver $driverId, group '$idGroup': ${range.start} -> ${range.end}")
     range
   }
 }

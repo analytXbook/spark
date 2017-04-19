@@ -2,9 +2,11 @@ package org.apache.spark.scheduler.flare
 
 import java.util.concurrent.{ConcurrentHashMap, Executor, Executors}
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.util.IdSource
 
-import scala.concurrent.ExecutionContext
+import scala.concurrent.{Await, ExecutionContext, Future, Promise}
+import scala.concurrent.duration._
 
 case class FlareIdRange(start: Long, end: Long) {
   lazy val range = start.until(end)
@@ -12,37 +14,56 @@ case class FlareIdRange(start: Long, end: Long) {
   def iterator = range.iterator
 }
 
-class FlareIdGroup(idGroup: String, isInt: Boolean, backend: FlareSchedulerBackend) {
+class FlareIdGroup(idGroup: String, isInt: Boolean, backend: FlareSchedulerBackend) extends Logging {
+  implicit val ec = FlareIdGroup.fetchContext
+
   var activeIterator: Iterator[Long] = Iterator.empty
 
-  @volatile var nextRange: Option[FlareIdRange] = None
-  @volatile var requestPending: Boolean = false
+  @volatile var readyRange: Option[FlareIdRange] = None
+  @volatile var pendingFetch: Option[Promise[FlareIdRange]] = None
 
   def next(): Long = synchronized {
     if (!activeIterator.hasNext) {
-      fetchNextRange()
-      while(nextRange.isEmpty) {
-        wait()
-      }
-      activeIterator = nextRange.get.iterator
-      nextRange = None
-      fetchNextRange()
+      activeIterator = nextRange().iterator
     }
     activeIterator.next()
   }
 
-  private def fetchNextRange() = {
-    if (nextRange.isEmpty && !requestPending) {
-      implicit val ec = FlareIdGroup.fetchContext
+  private def fetchNextRange(): Future[FlareIdRange] = {
+    val promise = Promise[FlareIdRange]()
+    pendingFetch = Some(promise)
+    promise.completeWith(backend.allocateIds(idGroup, isInt))
+    promise.future.map { range =>
+      pendingFetch = None
+      range
+    }
+  }
 
-      requestPending = true
-
-      backend.allocateIds(idGroup, isInt).map { range =>
-        nextRange = Some(range)
-        requestPending = false
-        notify()
+  private def nextRange(): FlareIdRange = {
+    val next = readyRange match {
+      case Some(range) => {
+        readyRange = None
+        range
+      }
+      case None => {
+        pendingFetch match {
+          case Some(promise) => {
+            val range = Await.result(promise.future, 1 minute)
+            readyRange = None
+            range
+          }
+          case None => Await.result(fetchNextRange(), 1 minute)
+        }
       }
     }
+
+    if (pendingFetch.isEmpty) {
+      fetchNextRange().foreach { range =>
+        readyRange = Some(range)
+      }
+    }
+
+    next
   }
 }
 
