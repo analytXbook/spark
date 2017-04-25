@@ -1,11 +1,13 @@
 package org.apache.spark.executor.flare
 
+import java.util.concurrent.ConcurrentHashMap
+
 import org.apache.spark.flare.FlareRedisClient
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.flare.FlareIdRange
 
 import scala.collection.JavaConversions._
-import scala.collection.mutable
+import scala.collection.concurrent.TrieMap
 
 trait FlareIdBackend{
   def init(): Unit
@@ -21,7 +23,7 @@ class RedisFlareIdBackend(redis: FlareRedisClient) extends FlareIdBackend with L
     redis.loadScript("lookup_ids")
   }
 
-  private val idCache = mutable.Map[String, mutable.Map[Long, Int]]().withDefaultValue(mutable.Map[Long, Int]())
+  private val idCache = TrieMap[(String, Long), Int]()
 
   private def rangeBounds(id: Long, isInt: Boolean): (Long, Long) = {
     val factor = (id / RANGE_SIZE)
@@ -38,17 +40,12 @@ class RedisFlareIdBackend(redis: FlareRedisClient) extends FlareIdBackend with L
 
   def lookupDriver(id: Long, idGroup: String, isInt: Boolean): Int = {
     val rangeEnd = rangeBounds(id, isInt)._2
-    val driverId = idCache(idGroup).get(rangeEnd) match {
-      case Some(driverId) => driverId
-      case None => {
-        logDebug(s"Looking up driver for $idGroup $id")
-        val driverId = redis.evalScript("lookup_ids", idGroup, rangeEnd.toString).asInstanceOf[Long].toInt
-        idCache(idGroup).putIfAbsent(rangeEnd, driverId)
-        driverId
-      }
-    }
+    val driverId = idCache.getOrElseUpdate((idGroup, rangeEnd), {
+      logDebug(s"Looking up $idGroup($id) in redis")
+      redis.evalScript("lookup_ids", idGroup, rangeEnd.toString).asInstanceOf[Long].toInt
+    })
 
-    logDebug(s"lookupDriver: $idGroup($id} => $driverId")
+    logDebug(s"lookupDriver: $idGroup($id) => $driverId")
 
     driverId
   }
@@ -56,8 +53,8 @@ class RedisFlareIdBackend(redis: FlareRedisClient) extends FlareIdBackend with L
   def allocateIds(driverId: Int, idGroup: String, isInt: Boolean): FlareIdRange = {
     val result = redis.evalScript("allocate_ids", driverId.toString, idGroup, isInt.toString, RANGE_SIZE.toString).asInstanceOf[java.util.List[Long]]
     val range = FlareIdRange(result(0), result(1))
-    idCache(idGroup).putIfAbsent(range.end, driverId)
-    logDebug(s"Allocated ids for driver $driverId, group '$idGroup': ${range.start} -> ${range.end}")
+    idCache.put((idGroup, range.end), driverId)
+    logDebug(s"Driver $driverId allocated $idGroup ids: ${range.start} -> ${range.end}")
     range
   }
 }
