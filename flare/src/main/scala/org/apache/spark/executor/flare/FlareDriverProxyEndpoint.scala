@@ -42,7 +42,10 @@ private[spark] abstract class FlareDriverProxyEndpoint(endpointName: String, clu
   override def onDriverExited(data: DriverData) = {
     driverRefs.remove(data.driverId)
   }
-  
+
+  protected def driverRef(id: Long, idGroup: String): Option[RpcEndpointRef] = driverRefs.get(driverId(id, idGroup))
+  protected def driverRef(id: Int, idGroup: String): Option[RpcEndpointRef] = driverRefs.get(driverId(id, idGroup))
+
   protected def driverId(id: Long, idGroup: String) = idBackend.lookupDriver(id, idGroup, false)
   protected def driverId(id: Int, idGroup: String) = idBackend.lookupDriver(id, idGroup, true)
 }

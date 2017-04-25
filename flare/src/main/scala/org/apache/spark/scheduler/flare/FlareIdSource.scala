@@ -8,19 +8,19 @@ import org.apache.spark.util.IdSource
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration._
 
-case class FlareIdRange(start: Long, end: Long) {
+private[spark] case class FlareIdRange(start: Long, end: Long) {
   lazy val range = start.until(end)
   lazy val size = range.size
   def iterator = range.iterator
 }
 
-class FlareIdGroup(idGroup: String, isInt: Boolean, backend: FlareSchedulerBackend) extends Logging {
-  implicit val ec = FlareIdGroup.fetchContext
+private[spark] class FlareIdGroup(idGroup: String, isInt: Boolean, backend: FlareSchedulerBackend) extends Logging {
+  implicit private val ec = FlareIdGroup.fetchContext
 
-  var activeIterator: Iterator[Long] = Iterator.empty
+  private var activeIterator: Iterator[Long] = Iterator.empty
 
-  @volatile var readyRange: Option[FlareIdRange] = None
-  @volatile var pendingFetch: Option[Promise[FlareIdRange]] = None
+  @volatile private var readyRange: Option[FlareIdRange] = None
+  @volatile private var pendingFetch: Option[Promise[FlareIdRange]] = None
 
   def next(): Long = synchronized {
     if (!activeIterator.hasNext) {
@@ -67,11 +67,11 @@ class FlareIdGroup(idGroup: String, isInt: Boolean, backend: FlareSchedulerBacke
   }
 }
 
-object FlareIdGroup {
-  val fetchContext = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(1))
+private[spark] object FlareIdGroup {
+  private val fetchContext = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(1))
 }
 
-class FlareIdSource(backend: FlareSchedulerBackend) extends IdSource {
+private[spark] class FlareIdSource(backend: FlareSchedulerBackend) extends IdSource {
   val groups = new ConcurrentHashMap[String, FlareIdGroup]
 
   private def next(idGroup: String, isInt: Boolean): Long = {
