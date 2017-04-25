@@ -63,6 +63,9 @@ case class NodeClusterProfile(nodeId: String, hostname: String, redis: FlareRedi
           cluster.refreshMembers()
         }
 
+        logInfo("Flushing Redis")
+        redis.flushAll()
+
         resetBarrier.removeBarrier()
       }
       override def notLeader() = {
