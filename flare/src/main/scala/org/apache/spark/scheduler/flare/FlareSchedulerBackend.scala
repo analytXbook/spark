@@ -191,6 +191,8 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
       case _ => throw new SparkException("Expected local data to be set to driver data")
     }
 
+    conf.set("spark.flare.driverId", driverId.toString)
+
     IdGenerator.setSource(new FlareIdSource(this))
   }
   

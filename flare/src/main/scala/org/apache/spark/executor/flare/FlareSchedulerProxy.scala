@@ -19,7 +19,9 @@ private[spark] class FlareSchedulerProxy(
 
   override def receive: PartialFunction[Any, Unit] = {
     case _statusUpdate @ StatusUpdate(executorId, taskId, state, data) => {
-      driverRefs.get(driverId(taskId, "task")).map(_.send(_statusUpdate))
+      val driver = driverId(taskId, "task")
+      logDebug(s"Sending status update $taskId TID $state -> driver $driver")
+      driverRefs.get(driver).map(_.send(_statusUpdate))
     }
     case reservation: FlareReservation => {
       executorRef.send(reservation)

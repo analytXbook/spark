@@ -1,5 +1,6 @@
 package org.apache.spark.executor.flare
 
+import org.apache.spark.SparkException
 import org.apache.spark.internal.Logging
 import org.apache.spark.flare.FlareCluster
 import org.apache.spark.rpc.{RpcCallContext, RpcEnv}
@@ -13,9 +14,12 @@ class FlareOutputCommitCoordinatorProxy(
   
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
     case _askPermissionToCommitOutput @ AskPermissionToCommitOutput(stageId, partition, attemptNumber) => {
-      pipe(_askPermissionToCommitOutput, driverRefs(driverId(stageId, "stage")), context)
+      driverRef(stageId, "stage").foreach(pipe(_askPermissionToCommitOutput, _, context))
     }
       
-    case _ => 
+    case unhandled => {
+      logError(s"Unhandled output committer message: $unhandled")
+      context.sendFailure(new SparkException(s"Message type ${unhandled.getClass} is unhandled by spark proxy"))
+    }
   }
 }

@@ -38,7 +38,7 @@ class RedisFlareIdBackend(redis: FlareRedisClient) extends FlareIdBackend with L
 
   def lookupDriver(id: Long, idGroup: String, isInt: Boolean): Int = {
     val rangeEnd = rangeBounds(id, isInt)._2
-    idCache(idGroup).get(rangeEnd) match {
+    val driverId = idCache(idGroup).get(rangeEnd) match {
       case Some(driverId) => driverId
       case None => {
         logDebug(s"Looking up driver for $idGroup $id")
@@ -47,6 +47,10 @@ class RedisFlareIdBackend(redis: FlareRedisClient) extends FlareIdBackend with L
         driverId
       }
     }
+
+    logDebug(s"lookupDriver: $idGroup($id} => $driverId")
+
+    driverId
   }
 
   def allocateIds(driverId: Int, idGroup: String, isInt: Boolean): FlareIdRange = {
