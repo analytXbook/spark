@@ -357,6 +357,16 @@ See the [configuration page](configuration.html) for information on Spark config
   </td>
 </tr>
 <tr>
+  <td><code>spark.mesos.executor.docker.parameters</code></td>
+  <td>(none)</td>
+  <td>
+    Set the list of custom parameters which will be passed into the <code>docker run</code> command when launching the Spark executor on Mesos using the docker containerizer. The format of this property is a comma-separated list of
+    key/value pairs. Example:
+
+    <pre>key1=val1,key2=val2,key3=val3</pre>
+  </td>
+</tr>
+<tr>
   <td><code>spark.mesos.executor.docker.volumes</code></td>
   <td>(none)</td>
   <td>
@@ -368,14 +378,12 @@ See the [configuration page](configuration.html) for information on Spark config
   </td>
 </tr>
 <tr>
-  <td><code>spark.mesos.executor.docker.portmaps</code></td>
+  <td><code>spark.mesos.task.labels</code></td>
   <td>(none)</td>
   <td>
-    Set the list of incoming ports exposed by the Docker image, which was set using
-    <code>spark.mesos.executor.docker.image</code>. The format of this property is a comma-separated list of
-    mappings which take the form:
-
-    <pre>host_port:container_port[:tcp|:udp]</pre>
+    Set the Mesos labels to add to each task. Labels are free-form key-value pairs.
+    Key-value pairs should be separated by a colon, and commas used to list more than one.
+    Ex. key:value,key2:value2.
   </td>
 </tr>
 <tr>
@@ -505,12 +513,26 @@ See the [configuration page](configuration.html) for information on Spark config
     Set the maximum number GPU resources to acquire for this job. Note that executors will still launch when no GPU resources are found
     since this configuration is just a upper limit and not a guaranteed amount.
   </td>
+  </tr>
+<tr>
+  <td><code>spark.mesos.network.name</code></td>
+  <td><code>(none)</code></td>
+  <td>
+    Attach containers to the given named network.  If this job is
+    launched in cluster mode, also launch the driver in the given named
+    network.  See
+    <a href="http://mesos.apache.org/documentation/latest/cni/">the Mesos CNI docs</a>
+    for more details.
+  </td>
 </tr>
 <tr>
   <td><code>spark.mesos.fetcherCache.enable</code></td>
   <td><code>false</code></td>
   <td>
-    If set to `true`, all URIs (example: `spark.executor.uri`, `spark.mesos.uris`) will be cached by the [Mesos fetcher cache](http://mesos.apache.org/documentation/latest/fetcher/)
+    If set to `true`, all URIs (example: `spark.executor.uri`,
+    `spark.mesos.uris`) will be cached by the <a
+    href="http://mesos.apache.org/documentation/latest/fetcher/">Mesos
+    Fetcher Cache</a>
   </td>
 </tr>
 </table>

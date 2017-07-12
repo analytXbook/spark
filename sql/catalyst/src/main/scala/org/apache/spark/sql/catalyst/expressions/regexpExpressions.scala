@@ -17,6 +17,7 @@
 
 package org.apache.spark.sql.catalyst.expressions
 
+import java.util.Locale
 import java.util.regex.{MatchResult, Pattern}
 
 import org.apache.commons.lang3.StringEscapeUtils
@@ -27,8 +28,8 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 
-trait StringRegexExpression extends ImplicitCastInputTypes {
-  self: BinaryExpression =>
+abstract class StringRegexExpression extends BinaryExpression
+  with ImplicitCastInputTypes with NullIntolerant {
 
   def escape(v: String): String
   def matches(regex: Pattern, str: String): Boolean
@@ -60,7 +61,7 @@ trait StringRegexExpression extends ImplicitCastInputTypes {
     }
   }
 
-  override def sql: String = s"${left.sql} ${prettyName.toUpperCase} ${right.sql}"
+  override def sql: String = s"${left.sql} ${prettyName.toUpperCase(Locale.ROOT)} ${right.sql}"
 }
 
 
@@ -68,9 +69,31 @@ trait StringRegexExpression extends ImplicitCastInputTypes {
  * Simple RegEx pattern matching function
  */
 @ExpressionDescription(
-  usage = "str _FUNC_ pattern - Returns true if str matches pattern and false otherwise.")
-case class Like(left: Expression, right: Expression)
-  extends BinaryExpression with StringRegexExpression {
+  usage = "str _FUNC_ pattern - Returns true if str matches pattern, " +
+    "null if any arguments are null, false otherwise.",
+  extended = """
+    Arguments:
+      str - a string expression
+      pattern - a string expression. The pattern is a string which is matched literally, with
+        exception to the following special symbols:
+
+          _ matches any one character in the input (similar to . in posix regular expressions)
+
+          % matches zero or more characters in the input (similar to .* in posix regular
+          expressions)
+
+        The escape character is '\'. If an escape character precedes a special symbol or another
+        escape character, the following character is matched literally. It is invalid to escape
+        any other character.
+
+    Examples:
+      > SELECT '%SystemDrive%\Users\John' _FUNC_ '\%SystemDrive\%\\Users%'
+      true
+
+    See also:
+      Use RLIKE to match with standard regular expressions.
+""")
+case class Like(left: Expression, right: Expression) extends StringRegexExpression {
 
   override def escape(v: String): String = StringUtils.escapeLikeRegex(v)
 
@@ -121,9 +144,8 @@ case class Like(left: Expression, right: Expression)
 }
 
 @ExpressionDescription(
-  usage = "str _FUNC_ regexp - Returns true if str matches regexp and false otherwise.")
-case class RLike(left: Expression, right: Expression)
-  extends BinaryExpression with StringRegexExpression {
+  usage = "str _FUNC_ regexp - Returns true if `str` matches `regexp`, or false otherwise.")
+case class RLike(left: Expression, right: Expression) extends StringRegexExpression {
 
   override def escape(v: String): String = v
   override def matches(regex: Pattern, str: String): Boolean = regex.matcher(str).find(0)
@@ -175,8 +197,12 @@ case class RLike(left: Expression, right: Expression)
  * Splits str around pat (pattern is a regular expression).
  */
 @ExpressionDescription(
-  usage = "_FUNC_(str, regex) - Splits str around occurrences that match regex",
-  extended = "> SELECT _FUNC_('oneAtwoBthreeC', '[ABC]');\n ['one', 'two', 'three']")
+  usage = "_FUNC_(str, regex) - Splits `str` around occurrences that match `regex`.",
+  extended = """
+    Examples:
+      > SELECT _FUNC_('oneAtwoBthreeC', '[ABC]');
+       ["one","two","three",""]
+  """)
 case class StringSplit(str: Expression, pattern: Expression)
   extends BinaryExpression with ImplicitCastInputTypes {
 
@@ -206,9 +232,15 @@ case class StringSplit(str: Expression, pattern: Expression)
  *
  * NOTE: this expression is not THREAD-SAFE, as it has some internal mutable status.
  */
+// scalastyle:off line.size.limit
 @ExpressionDescription(
-  usage = "_FUNC_(str, regexp, rep) - replace all substrings of str that match regexp with rep.",
-  extended = "> SELECT _FUNC_('100-200', '(\\d+)', 'num');\n 'num-num'")
+  usage = "_FUNC_(str, regexp, rep) - Replaces all substrings of `str` that match `regexp` with `rep`.",
+  extended = """
+    Examples:
+      > SELECT _FUNC_('100-200', '(\d+)', 'num');
+       num-num
+  """)
+// scalastyle:on line.size.limit
 case class RegExpReplace(subject: Expression, regexp: Expression, rep: Expression)
   extends TernaryExpression with ImplicitCastInputTypes {
 
@@ -220,7 +252,7 @@ case class RegExpReplace(subject: Expression, regexp: Expression, rep: Expressio
   @transient private var lastReplacement: String = _
   @transient private var lastReplacementInUTF8: UTF8String = _
   // result buffer write by Matcher
-  @transient private val result: StringBuffer = new StringBuffer
+  @transient private lazy val result: StringBuffer = new StringBuffer
 
   override def nullSafeEval(s: Any, p: Any, r: Any): Any = {
     if (!p.equals(lastRegex)) {
@@ -309,8 +341,12 @@ case class RegExpReplace(subject: Expression, regexp: Expression, rep: Expressio
  * NOTE: this expression is not THREAD-SAFE, as it has some internal mutable status.
  */
 @ExpressionDescription(
-  usage = "_FUNC_(str, regexp[, idx]) - extracts a group that matches regexp.",
-  extended = "> SELECT _FUNC_('100-200', '(\\d+)-(\\d+)', 1);\n '100'")
+  usage = "_FUNC_(str, regexp[, idx]) - Extracts a group that matches `regexp`.",
+  extended = """
+    Examples:
+      > SELECT _FUNC_('100-200', '(\d+)-(\d+)', 1);
+       100
+  """)
 case class RegExpExtract(subject: Expression, regexp: Expression, idx: Expression)
   extends TernaryExpression with ImplicitCastInputTypes {
   def this(s: Expression, r: Expression) = this(s, r, Literal(1))

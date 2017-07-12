@@ -28,9 +28,13 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
+import org.apache.spark.sql.catalyst.plans.logical.FunctionUtils
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.Row
-import org.apache.spark.sql.types.{DataType, ObjectType, StructType}
+import org.apache.spark.sql.catalyst.plans.logical.LogicalGroupState
+import org.apache.spark.sql.execution.streaming.GroupStateImpl
+import org.apache.spark.sql.types._
+import org.apache.spark.util.Utils
 
 
 /**
@@ -87,8 +91,9 @@ case class DeserializeToObjectExec(
   }
 
   override protected def doExecute(): RDD[InternalRow] = {
-    child.execute().mapPartitionsInternal { iter =>
+    child.execute().mapPartitionsWithIndexInternal { (index, iter) =>
       val projection = GenerateSafeProjection.generate(deserializer :: Nil, child.output)
+      projection.initialize(index)
       iter.map(projection)
     }
   }
@@ -124,8 +129,9 @@ case class SerializeFromObjectExec(
   }
 
   override protected def doExecute(): RDD[InternalRow] = {
-    child.execute().mapPartitionsInternal { iter =>
+    child.execute().mapPartitionsWithIndexInternal { (index, iter) =>
       val projection = UnsafeProjection.create(serializer)
+      projection.initialize(index)
       iter.map(projection)
     }
   }
@@ -139,6 +145,11 @@ object ObjectOperator {
       deserializer: Expression,
       inputSchema: Seq[Attribute]): InternalRow => Any = {
     val proj = GenerateSafeProjection.generate(deserializer :: Nil, inputSchema)
+    (i: InternalRow) => proj(i).get(0, deserializer.dataType)
+  }
+
+  def deserializeRowToObject(deserializer: Expression): InternalRow => Any = {
+    val proj = GenerateSafeProjection.generate(deserializer :: Nil)
     (i: InternalRow) => proj(i).get(0, deserializer.dataType)
   }
 
@@ -210,7 +221,7 @@ case class MapElementsExec(
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
     val (funcClass, methodName) = func match {
       case m: MapFunction[_, _] => classOf[MapFunction[_, _]] -> "call"
-      case _ => classOf[Any => Any] -> "apply"
+      case _ => FunctionUtils.getFunctionOneName(outputObjAttr.dataType, child.output(0).dataType)
     }
     val funcObj = Literal.create(func, ObjectType(funcClass))
     val callFunc = Invoke(funcObj, methodName, outputObjAttr.dataType, child.output)
@@ -339,6 +350,21 @@ case class MapGroupsExec(
         result.map(outputObject)
       }
     }
+  }
+}
+
+object MapGroupsExec {
+  def apply(
+      func: (Any, Iterator[Any], LogicalGroupState[Any]) => TraversableOnce[Any],
+      keyDeserializer: Expression,
+      valueDeserializer: Expression,
+      groupingAttributes: Seq[Attribute],
+      dataAttributes: Seq[Attribute],
+      outputObjAttr: Attribute,
+      child: SparkPlan): MapGroupsExec = {
+    val f = (key: Any, values: Iterator[Any]) => func(key, values, new GroupStateImpl[Any](None))
+    new MapGroupsExec(f, keyDeserializer, valueDeserializer,
+      groupingAttributes, dataAttributes, outputObjAttr, child)
   }
 }
 

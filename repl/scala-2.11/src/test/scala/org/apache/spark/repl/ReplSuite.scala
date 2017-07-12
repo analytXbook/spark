@@ -45,7 +45,7 @@ class ReplSuite extends SparkFunSuite {
         }
       }
     }
-    val classpath = paths.mkString(File.pathSeparator)
+    val classpath = paths.map(new File(_).getAbsolutePath).mkString(File.pathSeparator)
 
     val oldExecutorClasspath = System.getProperty(CONF_EXECUTOR_CLASSPATH)
     System.setProperty(CONF_EXECUTOR_CLASSPATH, classpath)
@@ -474,20 +474,14 @@ class ReplSuite extends SparkFunSuite {
     assertDoesNotContain("Exception", output)
   }
 
-  test("SPARK-18189: Fix serialization issue in KeyValueGroupedDataset") {
-    val resultValue = 12345
-    val output = runInterpreter("local",
-      s"""
-         |val keyValueGrouped = Seq((1, 2), (3, 4)).toDS().groupByKey(_._1)
-         |val mapGroups = keyValueGrouped.mapGroups((k, v) => (k, 1))
-         |val broadcasted = sc.broadcast($resultValue)
-         |
-         |// Using broadcast triggers serialization issue in KeyValueGroupedDataset
-         |val dataset = mapGroups.map(_ => broadcasted.value)
-         |dataset.collect()
-      """.stripMargin)
+  test("newProductSeqEncoder with REPL defined class") {
+    val output = runInterpreterInPasteMode("local-cluster[1,4,4096]",
+      """
+      |case class Click(id: Int)
+      |spark.implicits.newProductSeqEncoder[Click]
+    """.stripMargin)
+
     assertDoesNotContain("error:", output)
     assertDoesNotContain("Exception", output)
-    assertContains(s": Array[Int] = Array($resultValue, $resultValue)", output)
   }
 }

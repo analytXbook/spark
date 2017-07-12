@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.execution.command
 
+import java.util.Locale
+
 import scala.collection.{GenMap, GenSeq}
 import scala.collection.parallel.ForkJoinTaskSupport
 import scala.concurrent.forkjoin.ForkJoinPool
@@ -28,11 +30,11 @@ import org.apache.hadoop.mapred.{FileInputFormat, JobConf}
 
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.Resolver
-import org.apache.spark.sql.catalyst.catalog.{CatalogDatabase, CatalogTable, CatalogTablePartition, CatalogTableType, SessionCatalog}
+import org.apache.spark.sql.catalyst.analysis.{NoSuchTableException, Resolver}
+import org.apache.spark.sql.catalyst.catalog._
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
-import org.apache.spark.sql.execution.datasources.{CaseInsensitiveMap, PartitioningUtils}
+import org.apache.spark.sql.execution.datasources.PartitioningUtils
 import org.apache.spark.sql.types._
 import org.apache.spark.util.SerializableConfiguration
 
@@ -66,7 +68,7 @@ case class CreateDatabaseCommand(
       CatalogDatabase(
         databaseName,
         comment.getOrElse(""),
-        path.getOrElse(catalog.getDefaultDBPath(databaseName)),
+        path.map(CatalogUtils.stringToURI(_)).getOrElse(catalog.getDefaultDBPath(databaseName)),
         props),
       ifNotExists)
     Seq.empty[Row]
@@ -146,7 +148,7 @@ case class DescribeDatabaseCommand(
     val result =
       Row("Database Name", dbMetadata.name) ::
         Row("Description", dbMetadata.description) ::
-        Row("Location", dbMetadata.locationUri) :: Nil
+        Row("Location", CatalogUtils.URIToString(dbMetadata.locationUri)) :: Nil
 
     if (extended) {
       val properties =
@@ -199,9 +201,9 @@ case class DropTableCommand(
       }
     }
     try {
-      sparkSession.sharedState.cacheManager.uncacheQuery(
-        sparkSession.table(tableName.quotedString))
+      sparkSession.sharedState.cacheManager.uncacheQuery(sparkSession.table(tableName))
     } catch {
+      case _: NoSuchTableException if ifExists =>
       case NonFatal(e) => log.warn(e.toString, e)
     }
     catalog.refreshTable(tableName)
@@ -273,6 +275,77 @@ case class AlterTableUnsetPropertiesCommand(
 
 }
 
+
+/**
+ * A command to change the column for a table, only support changing the comment of a non-partition
+ * column for now.
+ *
+ * The syntax of using this command in SQL is:
+ * {{{
+ *   ALTER TABLE table_identifier
+ *   CHANGE [COLUMN] column_old_name column_new_name column_dataType [COMMENT column_comment]
+ *   [FIRST | AFTER column_name];
+ * }}}
+ */
+case class AlterTableChangeColumnCommand(
+    tableName: TableIdentifier,
+    columnName: String,
+    newColumn: StructField) extends RunnableCommand {
+
+  // TODO: support change column name/dataType/metadata/position.
+  override def run(sparkSession: SparkSession): Seq[Row] = {
+    val catalog = sparkSession.sessionState.catalog
+    val table = catalog.getTableMetadata(tableName)
+    val resolver = sparkSession.sessionState.conf.resolver
+    DDLUtils.verifyAlterTableType(catalog, table, isView = false)
+
+    // Find the origin column from schema by column name.
+    val originColumn = findColumnByName(table.schema, columnName, resolver)
+    // Throw an AnalysisException if the column name/dataType is changed.
+    if (!columnEqual(originColumn, newColumn, resolver)) {
+      throw new AnalysisException(
+        "ALTER TABLE CHANGE COLUMN is not supported for changing column " +
+          s"'${originColumn.name}' with type '${originColumn.dataType}' to " +
+          s"'${newColumn.name}' with type '${newColumn.dataType}'")
+    }
+
+    val newSchema = table.schema.fields.map { field =>
+      if (field.name == originColumn.name) {
+        // Create a new column from the origin column with the new comment.
+        addComment(field, newColumn.getComment)
+      } else {
+        field
+      }
+    }
+    val newTable = table.copy(schema = StructType(newSchema))
+    catalog.alterTable(newTable)
+
+    Seq.empty[Row]
+  }
+
+  // Find the origin column from schema by column name, throw an AnalysisException if the column
+  // reference is invalid.
+  private def findColumnByName(
+      schema: StructType, name: String, resolver: Resolver): StructField = {
+    schema.fields.collectFirst {
+      case field if resolver(field.name, name) => field
+    }.getOrElse(throw new AnalysisException(
+      s"Invalid column reference '$name', table schema is '${schema}'"))
+  }
+
+  // Add the comment to a column, if comment is empty, return the original column.
+  private def addComment(column: StructField, comment: Option[String]): StructField = {
+    comment.map(column.withComment(_)).getOrElse(column)
+  }
+
+  // Compare a [[StructField]] to another, return true if they have the same column
+  // name(by resolver) and dataType.
+  private def columnEqual(
+      field: StructField, other: StructField, resolver: Resolver): Boolean = {
+    resolver(field.name, other.name) && field.dataType == other.dataType
+  }
+}
+
 /**
  * A command that sets the serde class and/or serde properties of a table/view.
  *
@@ -328,13 +401,12 @@ case class AlterTableSerDePropertiesCommand(
 /**
  * Add Partition in ALTER TABLE: add the table partitions.
  *
- * 'partitionSpecsAndLocs': the syntax of ALTER VIEW is identical to ALTER TABLE,
- * EXCEPT that it is ILLEGAL to specify a LOCATION clause.
  * An error message will be issued if the partition exists, unless 'ifNotExists' is true.
  *
  * The syntax of this command is:
  * {{{
- *   ALTER TABLE table ADD [IF NOT EXISTS] PARTITION spec [LOCATION 'loc1']
+ *   ALTER TABLE table ADD [IF NOT EXISTS] PARTITION spec1 [LOCATION 'loc1']
+ *                                         PARTITION spec2 [LOCATION 'loc2']
  * }}}
  */
 case class AlterTableAddPartitionCommand(
@@ -355,7 +427,8 @@ case class AlterTableAddPartitionCommand(
         table.identifier.quotedString,
         sparkSession.sessionState.conf.resolver)
       // inherit table storage format (possibly except for location)
-      CatalogTablePartition(normalizedSpec, table.storage.copy(locationUri = location))
+      CatalogTablePartition(normalizedSpec, table.storage.copy(
+        locationUri = location.map(CatalogUtils.stringToURI(_))))
     }
     catalog.createPartitions(table.identifier, parts, ignoreIfExists = ifNotExists)
     Seq.empty[Row]
@@ -420,7 +493,8 @@ case class AlterTableDropPartitionCommand(
     tableName: TableIdentifier,
     specs: Seq[TablePartitionSpec],
     ifExists: Boolean,
-    purge: Boolean)
+    purge: Boolean,
+    retainData: Boolean)
   extends RunnableCommand {
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
@@ -438,7 +512,8 @@ case class AlterTableDropPartitionCommand(
     }
 
     catalog.dropPartitions(
-      table.identifier, normalizedSpecs, ignoreIfNotExists = ifExists, purge = purge)
+      table.identifier, normalizedSpecs, ignoreIfNotExists = ifExists, purge = purge,
+      retainData = retainData)
     Seq.empty[Row]
   }
 
@@ -485,14 +560,6 @@ case class AlterTableRecoverPartitionsCommand(
     }
   }
 
-  private def getBasePath(table: CatalogTable): Option[String] = {
-    if (table.provider == Some("hive")) {
-      table.storage.locationUri
-    } else {
-      new CaseInsensitiveMap(table.storage.properties).get("path")
-    }
-  }
-
   override def run(spark: SparkSession): Seq[Row] = {
     val catalog = spark.sessionState.catalog
     val table = catalog.getTableMetadata(tableName)
@@ -503,13 +570,12 @@ case class AlterTableRecoverPartitionsCommand(
         s"Operation not allowed: $cmd only works on partitioned tables: $tableIdentWithDB")
     }
 
-    val tablePath = getBasePath(table)
-    if (tablePath.isEmpty) {
+    if (table.storage.locationUri.isEmpty) {
       throw new AnalysisException(s"Operation not allowed: $cmd only works on table with " +
         s"location provided: $tableIdentWithDB")
     }
 
-    val root = new Path(tablePath.get)
+    val root = new Path(table.location)
     logInfo(s"Recover all the partitions in $root")
     val fs = root.getFileSystem(spark.sparkContext.hadoopConfiguration)
 
@@ -532,7 +598,7 @@ case class AlterTableRecoverPartitionsCommand(
     // Updates the table to indicate that its partition metadata is stored in the Hive metastore.
     // This is always the case for Hive format tables, but is not true for Datasource tables created
     // before Spark 2.1 unless they are converted via `msck repair table`.
-    spark.sessionState.catalog.alterTable(table.copy(partitionProviderIsHive = true))
+    spark.sessionState.catalog.alterTable(table.copy(tracksPartitionsInCatalog = true))
     catalog.refreshTable(tableName)
     logInfo(s"Recovered all partitions ($total).")
     Seq.empty[Row]
@@ -567,9 +633,9 @@ case class AlterTableRecoverPartitionsCommand(
       val name = st.getPath.getName
       if (st.isDirectory && name.contains("=")) {
         val ps = name.split("=", 2)
-        val columnName = PartitioningUtils.unescapePathName(ps(0))
+        val columnName = ExternalCatalogUtils.unescapePathName(ps(0))
         // TODO: Validate the value
-        val value = PartitioningUtils.unescapePathName(ps(1))
+        val value = ExternalCatalogUtils.unescapePathName(ps(1))
         if (resolver(columnName, partitionNames.head)) {
           scanPartitions(spark, fs, filter, st.getPath, spec ++ Map(partitionNames.head -> value),
             partitionNames.drop(1), threshold, resolver)
@@ -646,7 +712,7 @@ case class AlterTableRecoverPartitionsCommand(
         // inherit table storage format (possibly except for location)
         CatalogTablePartition(
           spec,
-          table.storage.copy(locationUri = Some(location.toUri.toString)),
+          table.storage.copy(locationUri = Some(location.toUri)),
           params)
       }
       spark.sessionState.catalog.createPartitions(tableName, parts, ignoreIfExists = true)
@@ -677,6 +743,7 @@ case class AlterTableSetLocationCommand(
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
     val table = catalog.getTableMetadata(tableName)
+    val locUri = CatalogUtils.stringToURI(location)
     DDLUtils.verifyAlterTableType(catalog, table, isView = false)
     partitionSpec match {
       case Some(spec) =>
@@ -684,19 +751,11 @@ case class AlterTableSetLocationCommand(
           sparkSession, table, "ALTER TABLE ... SET LOCATION")
         // Partition spec is specified, so we set the location only for this partition
         val part = catalog.getPartition(table.identifier, spec)
-        val newPart = part.copy(storage = part.storage.copy(locationUri = Some(location)))
+        val newPart = part.copy(storage = part.storage.copy(locationUri = Some(locUri)))
         catalog.alterPartitions(table.identifier, Seq(newPart))
       case None =>
         // No partition spec is specified, so we set the location for the table itself
-        val newTable =
-          if (DDLUtils.isDatasourceTable(table)) {
-            table.withNewStorage(
-              locationUri = Some(location),
-              properties = table.storage.properties ++ Map("path" -> location))
-          } else {
-            table.withNewStorage(locationUri = Some(location))
-          }
-        catalog.alterTable(newTable)
+        catalog.alterTable(table.withNewStorage(locationUri = Some(locUri)))
     }
     Seq.empty[Row]
   }
@@ -704,8 +763,14 @@ case class AlterTableSetLocationCommand(
 
 
 object DDLUtils {
+  val HIVE_PROVIDER = "hive"
+
+  def isHiveTable(table: CatalogTable): Boolean = {
+    table.provider.isDefined && table.provider.get.toLowerCase(Locale.ROOT) == HIVE_PROVIDER
+  }
+
   def isDatasourceTable(table: CatalogTable): Boolean = {
-    table.provider.isDefined && table.provider.get != "hive"
+    table.provider.isDefined && table.provider.get.toLowerCase(Locale.ROOT) != HIVE_PROVIDER
   }
 
   /**
@@ -719,7 +784,7 @@ object DDLUtils {
         s"$action is not allowed on $tableName since filesource partition management is " +
           "disabled (spark.sql.hive.manageFilesourcePartitions = false).")
     }
-    if (!table.partitionProviderIsHive && isDatasourceTable(table)) {
+    if (!table.tracksPartitionsInCatalog && isDatasourceTable(table)) {
       throw new AnalysisException(
         s"$action is not allowed on $tableName since its partition metadata is not stored in " +
           "the Hive metastore. To import this information into the metastore, run " +

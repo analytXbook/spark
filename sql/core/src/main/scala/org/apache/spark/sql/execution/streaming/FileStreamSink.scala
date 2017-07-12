@@ -17,16 +17,42 @@
 
 package org.apache.spark.sql.execution.streaming
 
+import scala.util.control.NonFatal
+
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 
 import org.apache.spark.internal.Logging
+import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.execution.datasources.{FileCommitProtocol, FileFormat, FileFormatWriter}
+import org.apache.spark.sql.execution.datasources.{FileFormat, FileFormatWriter}
 
-object FileStreamSink {
+object FileStreamSink extends Logging {
   // The name of the subdirectory that is used to store metadata about which files are valid.
   val metadataDir = "_spark_metadata"
+
+  /**
+   * Returns true if there is a single path that has a metadata log indicating which files should
+   * be read.
+   */
+  def hasMetadata(path: Seq[String], hadoopConf: Configuration): Boolean = {
+    path match {
+      case Seq(singlePath) =>
+        try {
+          val hdfsPath = new Path(singlePath)
+          val fs = hdfsPath.getFileSystem(hadoopConf)
+          val metadataPath = new Path(hdfsPath, metadataDir)
+          val res = fs.exists(metadataPath)
+          res
+        } catch {
+          case NonFatal(e) =>
+            logWarning(s"Error while looking for metadata directory.")
+            false
+        }
+      case _ => false
+    }
+  }
 }
 
 /**
@@ -54,7 +80,11 @@ class FileStreamSink(
       logInfo(s"Skipping already committed batch $batchId")
     } else {
       val committer = FileCommitProtocol.instantiate(
-        sparkSession.sessionState.conf.streamingFileCommitProtocolClass, path, isAppend = false)
+        className = sparkSession.sessionState.conf.streamingFileCommitProtocolClass,
+        jobId = batchId.toString,
+        outputPath = path,
+        isAppend = false)
+
       committer match {
         case manifestCommitter: ManifestFileCommitProtocol =>
           manifestCommitter.setupManifestOptions(fileLog, batchId)
@@ -72,10 +102,10 @@ class FileStreamSink(
 
       FileFormatWriter.write(
         sparkSession = sparkSession,
-        plan = data.logicalPlan,
+        queryExecution = data.queryExecution,
         fileFormat = fileFormat,
         committer = committer,
-        outputPath = path,
+        outputSpec = FileFormatWriter.OutputSpec(path, Map.empty),
         hadoopConf = hadoopConf,
         partitionColumns = partitionColumns,
         bucketSpec = None,

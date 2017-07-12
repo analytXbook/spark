@@ -20,6 +20,7 @@ package org.apache.spark.scheduler
 import java.io._
 import java.net.URI
 import java.nio.charset.StandardCharsets
+import java.util.Locale
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
@@ -153,7 +154,9 @@ private[spark] class EventLoggingListener(
 
   override def onTaskEnd(event: SparkListenerTaskEnd): Unit = logEvent(event)
 
-  override def onEnvironmentUpdate(event: SparkListenerEnvironmentUpdate): Unit = logEvent(event)
+  override def onEnvironmentUpdate(event: SparkListenerEnvironmentUpdate): Unit = {
+    logEvent(redactEvent(event))
+  }
 
   // Events that trigger a flush
   override def onStageCompleted(event: SparkListenerStageCompleted): Unit = {
@@ -188,6 +191,22 @@ private[spark] class EventLoggingListener(
   }
 
   override def onExecutorRemoved(event: SparkListenerExecutorRemoved): Unit = {
+    logEvent(event, flushLogger = true)
+  }
+
+  override def onExecutorBlacklisted(event: SparkListenerExecutorBlacklisted): Unit = {
+    logEvent(event, flushLogger = true)
+  }
+
+  override def onExecutorUnblacklisted(event: SparkListenerExecutorUnblacklisted): Unit = {
+    logEvent(event, flushLogger = true)
+  }
+
+  override def onNodeBlacklisted(event: SparkListenerNodeBlacklisted): Unit = {
+    logEvent(event, flushLogger = true)
+  }
+
+  override def onNodeUnblacklisted(event: SparkListenerNodeUnblacklisted): Unit = {
     logEvent(event, flushLogger = true)
   }
 
@@ -229,6 +248,15 @@ private[spark] class EventLoggingListener(
     } catch {
       case e: Exception => logDebug(s"failed to set time of $target", e)
     }
+  }
+
+  private[spark] def redactEvent(
+      event: SparkListenerEnvironmentUpdate): SparkListenerEnvironmentUpdate = {
+    // "Spark Properties" entry will always exist because the map is always populated with it.
+    val redactedProps = Utils.redact(sparkConf, event.environmentDetails("Spark Properties"))
+    val redactedEnvironmentDetails = event.environmentDetails +
+      ("Spark Properties" -> redactedProps)
+    SparkListenerEnvironmentUpdate(redactedEnvironmentDetails)
   }
 
 }
@@ -289,7 +317,7 @@ private[spark] object EventLoggingListener extends Logging {
   }
 
   private def sanitize(str: String): String = {
-    str.replaceAll("[ :/]", "-").replaceAll("[.${}'\"]", "_").toLowerCase
+    str.replaceAll("[ :/]", "-").replaceAll("[.${}'\"]", "_").toLowerCase(Locale.ROOT)
   }
 
   /**

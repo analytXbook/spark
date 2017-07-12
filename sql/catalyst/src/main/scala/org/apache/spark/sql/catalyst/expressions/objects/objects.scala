@@ -19,6 +19,7 @@ package org.apache.spark.sql.catalyst.expressions.objects
 
 import java.lang.reflect.Modifier
 
+import scala.collection.mutable.Builder
 import scala.language.existentials
 import scala.reflect.ClassTag
 
@@ -31,6 +32,78 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
 import org.apache.spark.sql.types._
+
+/**
+ * Common base class for [[StaticInvoke]], [[Invoke]], and [[NewInstance]].
+ */
+trait InvokeLike extends Expression with NonSQLExpression {
+
+  def arguments: Seq[Expression]
+
+  def propagateNull: Boolean
+
+  protected lazy val needNullCheck: Boolean = propagateNull && arguments.exists(_.nullable)
+
+  /**
+   * Prepares codes for arguments.
+   *
+   * - generate codes for argument.
+   * - use ctx.splitExpressions() to not exceed 64kb JVM limit while preparing arguments.
+   * - avoid some of nullabilty checking which are not needed because the expression is not
+   *   nullable.
+   * - when needNullCheck == true, short circuit if we found one of arguments is null because
+   *   preparing rest of arguments can be skipped in the case.
+   *
+   * @param ctx a [[CodegenContext]]
+   * @return (code to prepare arguments, argument string, result of argument null check)
+   */
+  def prepareArguments(ctx: CodegenContext): (String, String, String) = {
+
+    val resultIsNull = if (needNullCheck) {
+      val resultIsNull = ctx.freshName("resultIsNull")
+      ctx.addMutableState("boolean", resultIsNull, "")
+      resultIsNull
+    } else {
+      "false"
+    }
+    val argValues = arguments.map { e =>
+      val argValue = ctx.freshName("argValue")
+      ctx.addMutableState(ctx.javaType(e.dataType), argValue, "")
+      argValue
+    }
+
+    val argCodes = if (needNullCheck) {
+      val reset = s"$resultIsNull = false;"
+      val argCodes = arguments.zipWithIndex.map { case (e, i) =>
+        val expr = e.genCode(ctx)
+        val updateResultIsNull = if (e.nullable) {
+          s"$resultIsNull = ${expr.isNull};"
+        } else {
+          ""
+        }
+        s"""
+          if (!$resultIsNull) {
+            ${expr.code}
+            $updateResultIsNull
+            ${argValues(i)} = ${expr.value};
+          }
+        """
+      }
+      reset +: argCodes
+    } else {
+      arguments.zipWithIndex.map { case (e, i) =>
+        val expr = e.genCode(ctx)
+        s"""
+          ${expr.code}
+          ${argValues(i)} = ${expr.value};
+        """
+      }
+    }
+    val argCode = ctx.splitExpressions(ctx.INPUT_ROW, argCodes)
+
+    (argCode, argValues.mkString(", "), resultIsNull)
+  }
+}
 
 /**
  * Invokes a static function, returning the result.  By default, any of the arguments being null
@@ -50,7 +123,7 @@ case class StaticInvoke(
     dataType: DataType,
     functionName: String,
     arguments: Seq[Expression] = Nil,
-    propagateNull: Boolean = true) extends Expression with NonSQLExpression {
+    propagateNull: Boolean = true) extends InvokeLike {
 
   val objectName = staticObject.getName.stripSuffix("$")
 
@@ -62,16 +135,10 @@ case class StaticInvoke(
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val javaType = ctx.javaType(dataType)
-    val argGen = arguments.map(_.genCode(ctx))
-    val argString = argGen.map(_.value).mkString(", ")
+
+    val (argCode, argString, resultIsNull) = prepareArguments(ctx)
 
     val callFunc = s"$objectName.$functionName($argString)"
-
-    val setIsNull = if (propagateNull && arguments.nonEmpty) {
-      s"boolean ${ev.isNull} = ${argGen.map(_.isNull).mkString(" || ")};"
-    } else {
-      s"boolean ${ev.isNull} = false;"
-    }
 
     // If the function can return null, we do an extra check to make sure our null bit is still set
     // correctly.
@@ -82,9 +149,9 @@ case class StaticInvoke(
     }
 
     val code = s"""
-      ${argGen.map(_.code).mkString("\n")}
-      $setIsNull
-      final $javaType ${ev.value} = ${ev.isNull} ? ${ctx.defaultValue(dataType)} : $callFunc;
+      $argCode
+      boolean ${ev.isNull} = $resultIsNull;
+      final $javaType ${ev.value} = $resultIsNull ? ${ctx.defaultValue(dataType)} : $callFunc;
       $postNullCheck
      """
     ev.copy(code = code)
@@ -103,15 +170,20 @@ case class StaticInvoke(
  * @param functionName The name of the method to call.
  * @param dataType The expected return type of the function.
  * @param arguments An optional list of expressions, whos evaluation will be passed to the function.
+ * @param propagateNull When true, and any of the arguments is null, null will be returned instead
+ *                      of calling the function.
+ * @param returnNullable When false, indicating the invoked method will always return
+ *                       non-null value.
  */
 case class Invoke(
     targetObject: Expression,
     functionName: String,
     dataType: DataType,
     arguments: Seq[Expression] = Nil,
-    propagateNull: Boolean = true) extends Expression with NonSQLExpression {
+    propagateNull: Boolean = true,
+    returnNullable : Boolean = true) extends InvokeLike {
 
-  override def nullable: Boolean = true
+  override def nullable: Boolean = targetObject.nullable || needNullCheck || returnNullable
   override def children: Seq[Expression] = targetObject +: arguments
 
   override def eval(input: InternalRow): Any =
@@ -131,8 +203,8 @@ case class Invoke(
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val javaType = ctx.javaType(dataType)
     val obj = targetObject.genCode(ctx)
-    val argGen = arguments.map(_.genCode(ctx))
-    val argString = argGen.map(_.value).mkString(", ")
+
+    val (argCode, argString, resultIsNull) = prepareArguments(ctx)
 
     val returnPrimitive = method.isDefined && method.get.getReturnType.isPrimitive
     val needTryCatch = method.isDefined && method.get.getExceptionTypes.nonEmpty
@@ -153,39 +225,37 @@ case class Invoke(
       getFuncResult(ev.value, s"${obj.value}.$functionName($argString)")
     } else {
       val funcResult = ctx.freshName("funcResult")
+      // If the function can return null, we do an extra check to make sure our null bit is still
+      // set correctly.
+      val assignResult = if (!returnNullable) {
+        s"${ev.value} = (${ctx.boxedType(javaType)}) $funcResult;"
+      } else {
+        s"""
+          if ($funcResult != null) {
+            ${ev.value} = (${ctx.boxedType(javaType)}) $funcResult;
+          } else {
+            ${ev.isNull} = true;
+          }
+        """
+      }
       s"""
         Object $funcResult = null;
         ${getFuncResult(funcResult, s"${obj.value}.$functionName($argString)")}
-        if ($funcResult == null) {
-          ${ev.isNull} = true;
-        } else {
-          ${ev.value} = (${ctx.boxedType(javaType)}) $funcResult;
-        }
+        $assignResult
       """
     }
 
-    val setIsNull = if (propagateNull && arguments.nonEmpty) {
-      s"boolean ${ev.isNull} = ${obj.isNull} || ${argGen.map(_.isNull).mkString(" || ")};"
-    } else {
-      s"boolean ${ev.isNull} = ${obj.isNull};"
-    }
-
-    // If the function can return null, we do an extra check to make sure our null bit is still set
-    // correctly.
-    val postNullCheck = if (ctx.defaultValue(dataType) == "null") {
-      s"${ev.isNull} = ${ev.value} == null;"
-    } else {
-      ""
-    }
     val code = s"""
       ${obj.code}
-      ${argGen.map(_.code).mkString("\n")}
-      $setIsNull
+      boolean ${ev.isNull} = true;
       $javaType ${ev.value} = ${ctx.defaultValue(dataType)};
-      if (!${ev.isNull}) {
-        $evaluate
+      if (!${obj.isNull}) {
+        $argCode
+        ${ev.isNull} = $resultIsNull;
+        if (!${ev.isNull}) {
+          $evaluate
+        }
       }
-      $postNullCheck
      """
     ev.copy(code = code)
   }
@@ -223,10 +293,10 @@ case class NewInstance(
     arguments: Seq[Expression],
     propagateNull: Boolean,
     dataType: DataType,
-    outerPointer: Option[() => AnyRef]) extends Expression with NonSQLExpression {
+    outerPointer: Option[() => AnyRef]) extends InvokeLike {
   private val className = cls.getName
 
-  override def nullable: Boolean = propagateNull
+  override def nullable: Boolean = needNullCheck
 
   override def children: Seq[Expression] = arguments
 
@@ -245,52 +315,25 @@ case class NewInstance(
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val javaType = ctx.javaType(dataType)
-    val argIsNulls = ctx.freshName("argIsNulls")
-    ctx.addMutableState("boolean[]", argIsNulls,
-      s"$argIsNulls = new boolean[${arguments.size}];")
-    val argValues = arguments.zipWithIndex.map { case (e, i) =>
-      val argValue = ctx.freshName("argValue")
-      ctx.addMutableState(ctx.javaType(e.dataType), argValue, "")
-      argValue
-    }
 
-    val argCodes = arguments.zipWithIndex.map { case (e, i) =>
-      val expr = e.genCode(ctx)
-      expr.code + s"""
-       $argIsNulls[$i] = ${expr.isNull};
-       ${argValues(i)} = ${expr.value};
-     """
-    }
-    val argCode = ctx.splitExpressions(ctx.INPUT_ROW, argCodes)
+    val (argCode, argString, resultIsNull) = prepareArguments(ctx)
 
     val outer = outerPointer.map(func => Literal.fromObject(func()).genCode(ctx))
 
-    var isNull = ev.isNull
-    val setIsNull = if (propagateNull && arguments.nonEmpty) {
-      s"""
-       boolean $isNull = false;
-       for (int idx = 0; idx < ${arguments.length}; idx++) {
-         if ($argIsNulls[idx]) { $isNull = true; break; }
-       }
-     """
-    } else {
-      isNull = "false"
-      ""
-    }
+    ev.isNull = resultIsNull
 
     val constructorCall = outer.map { gen =>
-      s"""${gen.value}.new ${cls.getSimpleName}(${argValues.mkString(", ")})"""
+      s"${gen.value}.new ${cls.getSimpleName}($argString)"
     }.getOrElse {
-      s"new $className(${argValues.mkString(", ")})"
+      s"new $className($argString)"
     }
 
     val code = s"""
       $argCode
       ${outer.map(_.code).getOrElse("")}
-      $setIsNull
-      final $javaType ${ev.value} = $isNull ? ${ctx.defaultValue(javaType)} : $constructorCall;
-     """
-    ev.copy(code = code, isNull = isNull)
+      final $javaType ${ev.value} = ${ev.isNull} ? ${ctx.defaultValue(javaType)} : $constructorCall;
+    """
+    ev.copy(code = code)
   }
 
   override def toString: String = s"newInstance($cls)"
@@ -341,7 +384,7 @@ case class WrapOption(child: Expression, optType: DataType)
 
   override def dataType: DataType = ObjectType(classOf[Option[_]])
 
-  override def nullable: Boolean = true
+  override def nullable: Boolean = false
 
   override def inputTypes: Seq[AbstractDataType] = optType :: Nil
 
@@ -363,16 +406,39 @@ case class WrapOption(child: Expression, optType: DataType)
 }
 
 /**
- * A place holder for the loop variable used in [[MapObjects]].  This should never be constructed
+ * A placeholder for the loop variable used in [[MapObjects]].  This should never be constructed
  * manually, but will instead be passed into the provided lambda function.
  */
-case class LambdaVariable(value: String, isNull: String, dataType: DataType) extends LeafExpression
+case class LambdaVariable(
+    value: String,
+    isNull: String,
+    dataType: DataType,
+    nullable: Boolean = true) extends LeafExpression
   with Unevaluable with NonSQLExpression {
 
-  override def nullable: Boolean = true
-
   override def genCode(ctx: CodegenContext): ExprCode = {
-    ExprCode(code = "", value = value, isNull = isNull)
+    ExprCode(code = "", value = value, isNull = if (nullable) isNull else "false")
+  }
+}
+
+/**
+ * When constructing [[MapObjects]], the element type must be given, which may not be available
+ * before analysis. This class acts like a placeholder for [[MapObjects]], and will be replaced by
+ * [[MapObjects]] during analysis after the input data is resolved.
+ * Note that, ideally we should not serialize and send unresolved expressions to executors, but
+ * users may accidentally do this(e.g. mistakenly reference an encoder instance when implementing
+ * Aggregator). Here we mark `function` as transient because it may reference scala Type, which is
+ * not serializable. Then even users mistakenly reference unresolved expression and serialize it,
+ * it's just a performance issue(more network traffic), and will not fail.
+ */
+case class UnresolvedMapObjects(
+    @transient function: Expression => Expression,
+    child: Expression,
+    customCollectionCls: Option[Class[_]] = None) extends UnaryExpression with Unevaluable {
+  override lazy val resolved = false
+
+  override def dataType: DataType = customCollectionCls.map(ObjectType.apply).getOrElse {
+    throw new UnsupportedOperationException("not resolved")
   }
 }
 
@@ -385,24 +451,33 @@ object MapObjects {
    * @param function The function applied on the collection elements.
    * @param inputData An expression that when evaluated returns a collection object.
    * @param elementType The data type of elements in the collection.
+   * @param customCollectionCls Class of the resulting collection (returning ObjectType)
+   *                            or None (returning ArrayType)
    */
   def apply(
       function: Expression => Expression,
       inputData: Expression,
-      elementType: DataType): MapObjects = {
-    val loopValue = "MapObjects_loopValue" + curId.getAndIncrement()
-    val loopIsNull = "MapObjects_loopIsNull" + curId.getAndIncrement()
+      elementType: DataType,
+      customCollectionCls: Option[Class[_]] = None): MapObjects = {
+    val id = curId.getAndIncrement()
+    val loopValue = s"MapObjects_loopValue$id"
+    val loopIsNull = s"MapObjects_loopIsNull$id"
     val loopVar = LambdaVariable(loopValue, loopIsNull, elementType)
-    MapObjects(loopValue, loopIsNull, elementType, function(loopVar), inputData)
+    MapObjects(
+      loopValue, loopIsNull, elementType, function(loopVar), inputData, customCollectionCls)
   }
 }
 
 /**
  * Applies the given expression to every element of a collection of items, returning the result
- * as an ArrayType.  This is similar to a typical map operation, but where the lambda function
- * is expressed using catalyst expressions.
+ * as an ArrayType or ObjectType. This is similar to a typical map operation, but where the lambda
+ * function is expressed using catalyst expressions.
  *
- * The following collection ObjectTypes are currently supported:
+ * The type of the result is determined as follows:
+ * - ArrayType - when customCollectionCls is None
+ * - ObjectType(collection) - when customCollectionCls contains a collection class
+ *
+ * The following collection ObjectTypes are currently supported on input:
  *   Seq, Array, ArrayData, java.util.List
  *
  * @param loopValue the name of the loop variable that used when iterate the collection, and used
@@ -414,22 +489,27 @@ object MapObjects {
  * @param lambdaFunction A function that take the `loopVar` as input, and used as lambda function
  *                       to handle collection elements.
  * @param inputData An expression that when evaluated returns a collection object.
+ * @param customCollectionCls Class of the resulting collection (returning ObjectType)
+ *                            or None (returning ArrayType)
  */
 case class MapObjects private(
     loopValue: String,
     loopIsNull: String,
     loopVarDataType: DataType,
     lambdaFunction: Expression,
-    inputData: Expression) extends Expression with NonSQLExpression {
+    inputData: Expression,
+    customCollectionCls: Option[Class[_]]) extends Expression with NonSQLExpression {
 
-  override def nullable: Boolean = true
+  override def nullable: Boolean = inputData.nullable
 
   override def children: Seq[Expression] = lambdaFunction :: inputData :: Nil
 
   override def eval(input: InternalRow): Any =
     throw new UnsupportedOperationException("Only code-generated evaluation is supported")
 
-  override def dataType: DataType = ArrayType(lambdaFunction.dataType)
+  override def dataType: DataType =
+    customCollectionCls.map(ObjectType.apply).getOrElse(
+      ArrayType(lambdaFunction.dataType, containsNull = lambdaFunction.nullable))
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val elementJavaType = ctx.javaType(loopVarDataType)
@@ -512,15 +592,40 @@ case class MapObjects private(
       case _ => s"$loopIsNull = $loopValue == null;"
     }
 
+    val (initCollection, addElement, getResult): (String, String => String, String) =
+      customCollectionCls match {
+        case Some(cls) =>
+          // collection
+          val getBuilder = s"${cls.getName}$$.MODULE$$.newBuilder()"
+          val builder = ctx.freshName("collectionBuilder")
+          (
+            s"""
+               ${classOf[Builder[_, _]].getName} $builder = $getBuilder;
+               $builder.sizeHint($dataLength);
+             """,
+            genValue => s"$builder.$$plus$$eq($genValue);",
+            s"(${cls.getName}) $builder.result();"
+          )
+        case None =>
+          // array
+          (
+            s"""
+               $convertedType[] $convertedArray = null;
+               $convertedArray = $arrayConstructor;
+             """,
+            genValue => s"$convertedArray[$loopIndex] = $genValue;",
+            s"new ${classOf[GenericArrayData].getName}($convertedArray);"
+          )
+      }
+
     val code = s"""
       ${genInputData.code}
       ${ctx.javaType(dataType)} ${ev.value} = ${ctx.defaultValue(dataType)};
 
       if (!${genInputData.isNull}) {
         $determineCollectionType
-        $convertedType[] $convertedArray = null;
         int $dataLength = $getLength;
-        $convertedArray = $arrayConstructor;
+        $initCollection
 
         int $loopIndex = 0;
         while ($loopIndex < $dataLength) {
@@ -529,15 +634,15 @@ case class MapObjects private(
 
           ${genFunction.code}
           if (${genFunction.isNull}) {
-            $convertedArray[$loopIndex] = null;
+            ${addElement("null")}
           } else {
-            $convertedArray[$loopIndex] = $genFunctionValue;
+            ${addElement(genFunctionValue)}
           }
 
           $loopIndex += 1;
         }
 
-        ${ev.value} = new ${classOf[GenericArrayData].getName}($convertedArray);
+        ${ev.value} = $getResult
       }
     """
     ev.copy(code = code, isNull = genInputData.isNull)
@@ -552,7 +657,8 @@ object ExternalMapToCatalyst {
       keyType: DataType,
       keyConverter: Expression => Expression,
       valueType: DataType,
-      valueConverter: Expression => Expression): ExternalMapToCatalyst = {
+      valueConverter: Expression => Expression,
+      valueNullable: Boolean): ExternalMapToCatalyst = {
     val id = curId.getAndIncrement()
     val keyName = "ExternalMapToCatalyst_key" + id
     val valueName = "ExternalMapToCatalyst_value" + id
@@ -561,11 +667,11 @@ object ExternalMapToCatalyst {
     ExternalMapToCatalyst(
       keyName,
       keyType,
-      keyConverter(LambdaVariable(keyName, "false", keyType)),
+      keyConverter(LambdaVariable(keyName, "false", keyType, false)),
       valueName,
       valueIsNull,
       valueType,
-      valueConverter(LambdaVariable(valueName, valueIsNull, valueType)),
+      valueConverter(LambdaVariable(valueName, valueIsNull, valueType, valueNullable)),
       inputMap
     )
   }
@@ -603,7 +709,8 @@ case class ExternalMapToCatalyst private(
 
   override def foldable: Boolean = false
 
-  override def dataType: MapType = MapType(keyConverter.dataType, valueConverter.dataType)
+  override def dataType: MapType = MapType(
+    keyConverter.dataType, valueConverter.dataType, valueContainsNull = valueConverter.nullable)
 
   override def eval(input: InternalRow): Any =
     throw new UnsupportedOperationException("Only code-generated evaluation is supported")
@@ -855,19 +962,25 @@ case class InitializeJavaBean(beanInstance: Expression, setters: Map[String, Exp
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val instanceGen = beanInstance.genCode(ctx)
 
+    val javaBeanInstance = ctx.freshName("javaBean")
+    val beanInstanceJavaType = ctx.javaType(beanInstance.dataType)
+    ctx.addMutableState(beanInstanceJavaType, javaBeanInstance, "")
+
     val initialize = setters.map {
       case (setterMethod, fieldValue) =>
         val fieldGen = fieldValue.genCode(ctx)
         s"""
            ${fieldGen.code}
-           ${instanceGen.value}.$setterMethod(${fieldGen.value});
+           ${javaBeanInstance}.$setterMethod(${fieldGen.value});
          """
     }
+    val initializeCode = ctx.splitExpressions(ctx.INPUT_ROW, initialize.toSeq)
 
     val code = s"""
       ${instanceGen.code}
+      this.${javaBeanInstance} = ${instanceGen.value};
       if (!${instanceGen.isNull}) {
-        ${initialize.mkString("\n")}
+        $initializeCode
       }
      """
     ev.copy(code = code, isNull = instanceGen.isNull, value = instanceGen.value)
@@ -877,17 +990,19 @@ case class InitializeJavaBean(beanInstance: Expression, setters: Map[String, Exp
 /**
  * Asserts that input values of a non-nullable child expression are not null.
  *
- * Note that there are cases where `child.nullable == true`, while we still needs to add this
+ * Note that there are cases where `child.nullable == true`, while we still need to add this
  * assertion.  Consider a nullable column `s` whose data type is a struct containing a non-nullable
  * `Int` field named `i`.  Expression `s.i` is nullable because `s` can be null.  However, for all
  * non-null `s`, `s.i` can't be null.
  */
-case class AssertNotNull(child: Expression, walkedTypePath: Seq[String])
+case class AssertNotNull(child: Expression, walkedTypePath: Seq[String] = Nil)
   extends UnaryExpression with NonSQLExpression {
 
   override def dataType: DataType = child.dataType
   override def foldable: Boolean = false
   override def nullable: Boolean = false
+
+  override def flatArguments: Iterator[Any] = Iterator(child)
 
   private val errMsg = "Null value appeared in non-nullable field:" +
     walkedTypePath.mkString("\n", "\n", "\n") +
@@ -898,7 +1013,7 @@ case class AssertNotNull(child: Expression, walkedTypePath: Seq[String])
   override def eval(input: InternalRow): Any = {
     val result = child.eval(input)
     if (result == null) {
-      throw new RuntimeException(errMsg);
+      throw new NullPointerException(errMsg)
     }
     result
   }
@@ -908,13 +1023,13 @@ case class AssertNotNull(child: Expression, walkedTypePath: Seq[String])
 
     // Use unnamed reference that doesn't create a local field here to reduce the number of fields
     // because errMsgField is used only when the value is null.
-    val errMsgField = ctx.addReferenceObj(errMsg)
+    val errMsgField = ctx.addReferenceMinorObj(errMsg)
 
     val code = s"""
       ${childGen.code}
 
       if (${childGen.isNull}) {
-        throw new RuntimeException($errMsgField);
+        throw new NullPointerException($errMsgField);
       }
      """
     ev.copy(code = code, isNull = "false", value = childGen.value)
@@ -945,7 +1060,7 @@ case class GetExternalRowField(
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     // Use unnamed reference that doesn't create a local field here to reduce the number of fields
     // because errMsgField is used only when the field is null.
-    val errMsgField = ctx.addReferenceObj(errMsg)
+    val errMsgField = ctx.addReferenceMinorObj(errMsg)
     val row = child.genCode(ctx)
     val code = s"""
       ${row.code}
@@ -985,7 +1100,7 @@ case class ValidateExternalType(child: Expression, expected: DataType)
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     // Use unnamed reference that doesn't create a local field here to reduce the number of fields
     // because errMsgField is used only when the type doesn't match.
-    val errMsgField = ctx.addReferenceObj(errMsg)
+    val errMsgField = ctx.addReferenceMinorObj(errMsg)
     val input = child.genCode(ctx)
     val obj = input.value
 
