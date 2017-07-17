@@ -119,7 +119,8 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: SQLConf)
       CostBasedJoinReorder(conf)) ::
     Batch("Decimal Optimizations", fixedPoint,
       DecimalAggregates(conf)) ::
-    Batch("Typed Filter Optimization", fixedPoint,
+    Batch("Object Expressions Optimization", fixedPoint,
+      EliminateMapObjects,
       CombineTypedFilters) ::
     Batch("LocalRelation", fixedPoint,
       ConvertToLocalRelation,
@@ -440,8 +441,7 @@ object ColumnPruning extends Rule[LogicalPlan] {
       g.copy(child = prunedChild(g.child, g.references))
 
     // Turn off `join` for Generate if no column from it's child is used
-    case p @ Project(_, g: Generate)
-        if g.join && !g.outer && p.references.subsetOf(g.generatedSet) =>
+    case p @ Project(_, g: Generate) if g.join && p.references.subsetOf(g.generatedSet) =>
       p.copy(child = g.copy(join = false))
 
     // Eliminate unneeded attributes from right side of a Left Existence Join.
@@ -861,7 +861,7 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
     // Note that some operators (e.g. project, aggregate, union) are being handled separately
     // (earlier in this rule).
     case _: AppendColumns => true
-    case _: BroadcastHint => true
+    case _: ResolvedHint => true
     case _: Distinct => true
     case _: Generate => true
     case _: Pivot => true

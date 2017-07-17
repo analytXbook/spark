@@ -23,13 +23,13 @@ import scala.reflect.runtime.universe.{typeTag, TypeTag}
 import scala.util.Try
 import scala.util.control.NonFatal
 
-import org.apache.spark.annotation.{Experimental, InterfaceStability}
+import org.apache.spark.annotation.InterfaceStability
 import org.apache.spark.sql.catalyst.ScalaReflection
 import org.apache.spark.sql.catalyst.analysis.{Star, UnresolvedFunction}
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
-import org.apache.spark.sql.catalyst.plans.logical.BroadcastHint
+import org.apache.spark.sql.catalyst.plans.logical.{HintInfo, ResolvedHint}
 import org.apache.spark.sql.execution.SparkSqlParser
 import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.sql.internal.SQLConf
@@ -1019,7 +1019,8 @@ object functions {
    * @since 1.5.0
    */
   def broadcast[T](df: Dataset[T]): Dataset[T] = {
-    Dataset[T](df.sparkSession, BroadcastHint(df.logicalPlan))(df.exprEnc)
+    Dataset[T](df.sparkSession,
+      ResolvedHint(df.logicalPlan, HintInfo(isBroadcastable = Option(true))))(df.exprEnc)
   }
 
   /**
@@ -2291,7 +2292,8 @@ object functions {
   }
 
   /**
-   * Left-pad the string column with
+   * Left-pad the string column with pad to a length of len. If the string column is longer
+   * than len, the return value is shortened to len characters.
    *
    * @group string_funcs
    * @since 1.5.0
@@ -2349,7 +2351,8 @@ object functions {
   def unbase64(e: Column): Column = withExpr { UnBase64(e.expr) }
 
   /**
-   * Right-padded with pad to a length of len.
+   * Right-pad the string column with pad to a length of len. If the string column is longer
+   * than len, the return value is shortened to len characters.
    *
    * @group string_funcs
    * @since 1.5.0
@@ -2793,8 +2796,6 @@ object functions {
    * @group datetime_funcs
    * @since 2.0.0
    */
-  @Experimental
-  @InterfaceStability.Evolving
   def window(
       timeColumn: Column,
       windowDuration: String,
@@ -2847,8 +2848,6 @@ object functions {
    * @group datetime_funcs
    * @since 2.0.0
    */
-  @Experimental
-  @InterfaceStability.Evolving
   def window(timeColumn: Column, windowDuration: String, slideDuration: String): Column = {
     window(timeColumn, windowDuration, slideDuration, "0 second")
   }
@@ -2886,8 +2885,6 @@ object functions {
    * @group datetime_funcs
    * @since 2.0.0
    */
-  @Experimental
-  @InterfaceStability.Evolving
   def window(timeColumn: Column, windowDuration: String): Column = {
     window(timeColumn, windowDuration, windowDuration, "0 second")
   }

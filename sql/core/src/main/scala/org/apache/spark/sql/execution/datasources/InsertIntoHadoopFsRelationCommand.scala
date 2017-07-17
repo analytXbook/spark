@@ -37,11 +37,14 @@ import org.apache.spark.sql.execution.command._
  *                         overwrites: when the spec is empty, all partitions are overwritten.
  *                         When it covers a prefix of the partition keys, only partitions matching
  *                         the prefix are overwritten.
+ * @param ifPartitionNotExists If true, only write if the partition does not exist.
+ *                             Only valid for static partitions.
  */
 case class InsertIntoHadoopFsRelationCommand(
     outputPath: Path,
     staticPartitions: TablePartitionSpec,
-    partitionColumns: Seq[Attribute],
+    ifPartitionNotExists: Boolean,
+    partitionColumns: Seq[String],
     bucketSpec: Option[BucketSpec],
     fileFormat: FileFormat,
     options: Map[String, String],
@@ -61,8 +64,8 @@ case class InsertIntoHadoopFsRelationCommand(
       val duplicateColumns = query.schema.fieldNames.groupBy(identity).collect {
         case (x, ys) if ys.length > 1 => "\"" + x + "\""
       }.mkString(", ")
-      throw new AnalysisException(s"Duplicate column(s) : $duplicateColumns found, " +
-          s"cannot save to file.")
+      throw new AnalysisException(s"Duplicate column(s): $duplicateColumns found, " +
+        "cannot save to file.")
     }
 
     val hadoopConf = sparkSession.sessionState.newHadoopConfWithOptions(options)
@@ -76,11 +79,12 @@ case class InsertIntoHadoopFsRelationCommand(
 
     var initialMatchingPartitions: Seq[TablePartitionSpec] = Nil
     var customPartitionLocations: Map[TablePartitionSpec, String] = Map.empty
+    var matchingPartitions: Seq[CatalogTablePartition] = Seq.empty
 
     // When partitions are tracked by the catalog, compute all custom partition locations that
     // may be relevant to the insertion job.
     if (partitionsTrackedByCatalog) {
-      val matchingPartitions = sparkSession.sessionState.catalog.listPartitions(
+      matchingPartitions = sparkSession.sessionState.catalog.listPartitions(
         catalogTable.get.identifier, Some(staticPartitions))
       initialMatchingPartitions = matchingPartitions.map(_.spec)
       customPartitionLocations = getCustomPartitionLocations(
@@ -101,8 +105,12 @@ case class InsertIntoHadoopFsRelationCommand(
       case (SaveMode.ErrorIfExists, true) =>
         throw new AnalysisException(s"path $qualifiedOutputPath already exists.")
       case (SaveMode.Overwrite, true) =>
-        deleteMatchingPartitions(fs, qualifiedOutputPath, customPartitionLocations, committer)
-        true
+        if (ifPartitionNotExists && matchingPartitions.nonEmpty) {
+          false
+        } else {
+          deleteMatchingPartitions(fs, qualifiedOutputPath, customPartitionLocations, committer)
+          true
+        }
       case (SaveMode.Append, _) | (SaveMode.Overwrite, _) | (SaveMode.ErrorIfExists, false) =>
         true
       case (SaveMode.Ignore, exists) =>
@@ -142,7 +150,7 @@ case class InsertIntoHadoopFsRelationCommand(
         outputSpec = FileFormatWriter.OutputSpec(
           qualifiedOutputPath.toString, customPartitionLocations),
         hadoopConf = hadoopConf,
-        partitionColumns = partitionColumns,
+        partitionColumnNames = partitionColumns,
         bucketSpec = bucketSpec,
         refreshFunction = refreshPartitionsCallback,
         options = options)
@@ -168,10 +176,10 @@ case class InsertIntoHadoopFsRelationCommand(
       customPartitionLocations: Map[TablePartitionSpec, String],
       committer: FileCommitProtocol): Unit = {
     val staticPartitionPrefix = if (staticPartitions.nonEmpty) {
-      "/" + partitionColumns.flatMap { p =>
-        staticPartitions.get(p.name) match {
+      "/" + partitionColumns.flatMap { col =>
+        staticPartitions.get(col) match {
           case Some(value) =>
-            Some(escapePathName(p.name) + "=" + escapePathName(value))
+            Some(escapePathName(col) + "=" + escapePathName(value))
           case None =>
             None
         }

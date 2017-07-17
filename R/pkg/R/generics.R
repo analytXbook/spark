@@ -572,6 +572,10 @@ setGeneric("group_by", function(x, ...) { standardGeneric("group_by") })
 #' @export
 setGeneric("groupBy", function(x, ...) { standardGeneric("groupBy") })
 
+#' @rdname hint
+#' @export
+setGeneric("hint", function(x, name, ...) { standardGeneric("hint") })
+
 #' @rdname insertInto
 #' @export
 setGeneric("insertInto", function(x, tableName, ...) { standardGeneric("insertInto") })
@@ -1469,7 +1473,7 @@ setGeneric("write.ml", function(object, path, ...) { standardGeneric("write.ml")
 
 #' @rdname awaitTermination
 #' @export
-setGeneric("awaitTermination", function(x, timeout) { standardGeneric("awaitTermination") })
+setGeneric("awaitTermination", function(x, timeout = NULL) { standardGeneric("awaitTermination") })
 
 #' @rdname isActive
 #' @export

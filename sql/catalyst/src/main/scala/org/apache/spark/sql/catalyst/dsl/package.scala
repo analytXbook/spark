@@ -168,6 +168,7 @@ package object dsl {
       case Seq() => UnresolvedStar(None)
       case target => UnresolvedStar(Option(target))
     }
+    def namedStruct(e: Expression*): Expression = CreateNamedStruct(e)
 
     def callFunction[T, U](
         func: T => U,
@@ -366,7 +367,7 @@ package object dsl {
       def insertInto(tableName: String, overwrite: Boolean = false): LogicalPlan =
         InsertIntoTable(
           analysis.UnresolvedRelation(TableIdentifier(tableName)),
-          Map.empty, logicalPlan, overwrite, false)
+          Map.empty, logicalPlan, overwrite, ifPartitionNotExists = false)
 
       def as(alias: String): LogicalPlan = SubqueryAlias(alias, logicalPlan)
 
@@ -381,6 +382,9 @@ package object dsl {
 
       def analyze: LogicalPlan =
         EliminateSubqueryAliases(analysis.SimpleAnalyzer.execute(logicalPlan))
+
+      def hint(name: String, parameters: Any*): LogicalPlan =
+        UnresolvedHint(name, parameters, logicalPlan)
     }
   }
 }

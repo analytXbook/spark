@@ -22,7 +22,7 @@ import java.util.Locale
 import org.apache.spark.sql.{AnalysisException, SaveMode, SparkSession}
 import org.apache.spark.sql.catalyst.analysis._
 import org.apache.spark.sql.catalyst.catalog._
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Cast, RowOrdering}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, RowOrdering}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.command.DDLUtils
@@ -127,11 +127,11 @@ case class PreprocessTableCreation(sparkSession: SparkSession) extends Rule[Logi
       val resolver = sparkSession.sessionState.conf.resolver
       val tableCols = existingTable.schema.map(_.name)
 
-      // As we are inserting into an existing table, we should respect the existing schema and
-      // adjust the column order of the given dataframe according to it, or throw exception
-      // if the column names do not match.
+      // As we are inserting into an existing table, we should respect the existing schema, preserve
+      // the case and adjust the column order of the given DataFrame according to it, or throw
+      // an exception if the column names do not match.
       val adjustedColumns = tableCols.map { col =>
-        query.resolve(Seq(col), resolver).getOrElse {
+        query.resolve(Seq(col), resolver).map(Alias(_, col)()).getOrElse {
           val inputColumns = query.schema.map(_.name).mkString(", ")
           throw new AnalysisException(
             s"cannot resolve '$col' given input columns: [$inputColumns]")
@@ -168,15 +168,9 @@ case class PreprocessTableCreation(sparkSession: SparkSession) extends Rule[Logi
           """.stripMargin)
       }
 
-      val newQuery = if (adjustedColumns != query.output) {
-        Project(adjustedColumns, query)
-      } else {
-        query
-      }
-
       c.copy(
         tableDesc = existingTable,
-        query = Some(newQuery))
+        query = Some(Project(adjustedColumns, query)))
 
     // Here we normalize partition, bucket and sort column names, w.r.t. the case sensitivity
     // config, and do various checks:
@@ -315,7 +309,7 @@ case class PreprocessTableCreation(sparkSession: SparkSession) extends Rule[Logi
  * table. It also does data type casting and field renaming, to make sure that the columns to be
  * inserted have the correct data type and fields have the correct names.
  */
-case class PreprocessTableInsertion(conf: SQLConf) extends Rule[LogicalPlan] {
+case class PreprocessTableInsertion(conf: SQLConf) extends Rule[LogicalPlan] with CastSupport {
   private def preprocess(
       insert: InsertIntoTable,
       tblName: String,
@@ -367,7 +361,7 @@ case class PreprocessTableInsertion(conf: SQLConf) extends Rule[LogicalPlan] {
           // Renaming is needed for handling the following cases like
           // 1) Column names/types do not match, e.g., INSERT INTO TABLE tab1 SELECT 1, 2
           // 2) Target tables have column metadata
-          Alias(Cast(actual, expected.dataType), expected.name)(
+          Alias(cast(actual, expected.dataType), expected.name)(
             explicitMetadata = Option(expected.metadata))
         }
     }

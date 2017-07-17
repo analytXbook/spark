@@ -39,6 +39,7 @@ import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.{CalendarIntervalType, StructType}
+import org.apache.spark.sql.util.SchemaUtils
 import org.apache.spark.util.Utils
 
 /**
@@ -181,6 +182,11 @@ case class DataSource(
       throw new AnalysisException(
         s"Unable to infer schema for $format. It must be specified manually.")
     }
+
+    SchemaUtils.checkColumnNameDuplication(
+      (dataSchema ++ partitionSchema).map(_.name), "in the data schema and the partition schema",
+      sparkSession.sessionState.conf.caseSensitiveAnalysis)
+
     (dataSchema, partitionSchema)
   }
 
@@ -408,16 +414,6 @@ case class DataSource(
     val caseSensitive = sparkSession.sessionState.conf.caseSensitiveAnalysis
     PartitioningUtils.validatePartitionColumn(data.schema, partitionColumns, caseSensitive)
 
-    // SPARK-17230: Resolve the partition columns so InsertIntoHadoopFsRelationCommand does
-    // not need to have the query as child, to avoid to analyze an optimized query,
-    // because InsertIntoHadoopFsRelationCommand will be optimized first.
-    val partitionAttributes = partitionColumns.map { name =>
-      val plan = data.logicalPlan
-      plan.resolve(name :: Nil, data.sparkSession.sessionState.analyzer.resolver).getOrElse {
-        throw new AnalysisException(
-          s"Unable to resolve $name given [${plan.output.map(_.name).mkString(", ")}]")
-      }.asInstanceOf[Attribute]
-    }
     val fileIndex = catalogTable.map(_.identifier).map { tableIdent =>
       sparkSession.table(tableIdent).queryExecution.analyzed.collect {
         case LogicalRelation(t: HadoopFsRelation, _, _) => t.location
@@ -430,7 +426,8 @@ case class DataSource(
       InsertIntoHadoopFsRelationCommand(
         outputPath = outputPath,
         staticPartitions = Map.empty,
-        partitionColumns = partitionAttributes,
+        ifPartitionNotExists = false,
+        partitionColumns = partitionColumns,
         bucketSpec = bucketSpec,
         fileFormat = format,
         options = options,
@@ -481,7 +478,7 @@ case class DataSource(
   }
 }
 
-object DataSource {
+object DataSource extends Logging {
 
   /** A map to maintain backward compatibility in case we move data sources around. */
   private val backwardCompatibilityMap: Map[String, String] = {
@@ -570,10 +567,19 @@ object DataSource {
           // there is exactly one registered alias
           head.getClass
         case sources =>
-          // There are multiple registered aliases for the input
-          sys.error(s"Multiple sources found for $provider1 " +
-            s"(${sources.map(_.getClass.getName).mkString(", ")}), " +
-            "please specify the fully qualified class name.")
+          // There are multiple registered aliases for the input. If there is single datasource
+          // that has "org.apache.spark" package in the prefix, we use it considering it is an
+          // internal datasource within Spark.
+          val sourceNames = sources.map(_.getClass.getName)
+          val internalSources = sources.filter(_.getClass.getName.startsWith("org.apache.spark"))
+          if (internalSources.size == 1) {
+            logWarning(s"Multiple sources found for $provider1 (${sourceNames.mkString(", ")}), " +
+              s"defaulting to the internal datasource (${internalSources.head.getClass.getName}).")
+            internalSources.head.getClass
+          } else {
+            throw new AnalysisException(s"Multiple sources found for $provider1 " +
+              s"(${sourceNames.mkString(", ")}), please specify the fully qualified class name.")
+          }
       }
     } catch {
       case e: ServiceConfigurationError if e.getCause.isInstanceOf[NoClassDefFoundError] =>

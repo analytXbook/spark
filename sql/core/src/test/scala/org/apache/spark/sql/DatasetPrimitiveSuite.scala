@@ -32,6 +32,9 @@ case class QueueClass(q: Queue[Int])
 
 case class ComplexClass(seq: SeqClass, list: ListClass, queue: QueueClass)
 
+case class InnerData(name: String, value: Int)
+case class NestedData(id: Int, param: Map[String, InnerData])
+
 package object packageobject {
   case class PackageClass(value: Int)
 }
@@ -258,9 +261,19 @@ class DatasetPrimitiveSuite extends QueryTest with SharedSQLContext {
       ListClass(List(1)) -> Queue("test" -> SeqClass(Seq(2))))
   }
 
+  test("nested sequences") {
+    checkDataset(Seq(Seq(Seq(1))).toDS(), Seq(Seq(1)))
+    checkDataset(Seq(List(Queue(1))).toDS(), List(Queue(1)))
+  }
+
   test("package objects") {
     import packageobject._
     checkDataset(Seq(PackageClass(1)).toDS(), PackageClass(1))
   }
 
+  test("SPARK-19104: Lambda variables in ExternalMapToCatalyst should be global") {
+    val data = Seq.tabulate(10)(i => NestedData(1, Map("key" -> InnerData("name", i + 100))))
+    val ds = spark.createDataset(data)
+    checkDataset(ds, data: _*)
+  }
 }

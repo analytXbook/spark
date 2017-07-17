@@ -35,6 +35,7 @@ import org.apache.spark.{Dependency, Partitioner, ShuffleDependency, SparkContex
 import org.apache.spark.annotation.{DeveloperApi, Since}
 import org.apache.spark.internal.Logging
 import org.apache.spark.ml.{Estimator, Model}
+import org.apache.spark.ml.linalg.BLAS
 import org.apache.spark.ml.param._
 import org.apache.spark.ml.param.shared._
 import org.apache.spark.ml.util._
@@ -45,7 +46,7 @@ import org.apache.spark.sql.{DataFrame, Dataset}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import org.apache.spark.storage.StorageLevel
-import org.apache.spark.util.Utils
+import org.apache.spark.util.{BoundedPriorityQueue, Utils}
 import org.apache.spark.util.collection.{OpenHashMap, OpenHashSet, SortDataFormat, Sorter}
 import org.apache.spark.util.random.XORShiftRandom
 
@@ -356,6 +357,19 @@ class ALSModel private[ml] (
 
   /**
    * Makes recommendations for all users (or items).
+   *
+   * Note: the previous approach used for computing top-k recommendations
+   * used a cross-join followed by predicting a score for each row of the joined dataset.
+   * However, this results in exploding the size of intermediate data. While Spark SQL makes it
+   * relatively efficient, the approach implemented here is significantly more efficient.
+   *
+   * This approach groups factors into blocks and computes the top-k elements per block,
+   * using dot product and an efficient [[BoundedPriorityQueue]] (instead of gemm).
+   * It then computes the global top-k by aggregating the per block top-k elements with
+   * a [[TopByKeyAggregator]]. This significantly reduces the size of intermediate and shuffle data.
+   * This is the DataFrame equivalent to the approach used in
+   * [[org.apache.spark.mllib.recommendation.MatrixFactorizationModel]].
+   *
    * @param srcFactors src factors for which to generate recommendations
    * @param dstFactors dst factors used to make recommendations
    * @param srcOutputColumn name of the column for the source ID in the output DataFrame
@@ -372,11 +386,30 @@ class ALSModel private[ml] (
       num: Int): DataFrame = {
     import srcFactors.sparkSession.implicits._
 
-    val ratings = srcFactors.crossJoin(dstFactors)
-      .select(
-        srcFactors("id"),
-        dstFactors("id"),
-        predict(srcFactors("features"), dstFactors("features")))
+    val srcFactorsBlocked = blockify(srcFactors.as[(Int, Array[Float])])
+    val dstFactorsBlocked = blockify(dstFactors.as[(Int, Array[Float])])
+    val ratings = srcFactorsBlocked.crossJoin(dstFactorsBlocked)
+      .as[(Seq[(Int, Array[Float])], Seq[(Int, Array[Float])])]
+      .flatMap { case (srcIter, dstIter) =>
+        val m = srcIter.size
+        val n = math.min(dstIter.size, num)
+        val output = new Array[(Int, Int, Float)](m * n)
+        var i = 0
+        val pq = new BoundedPriorityQueue[(Int, Float)](num)(Ordering.by(_._2))
+        srcIter.foreach { case (srcId, srcFactor) =>
+          dstIter.foreach { case (dstId, dstFactor) =>
+            // We use F2jBLAS which is faster than a call to native BLAS for vector dot product
+            val score = BLAS.f2jBLAS.sdot(rank, srcFactor, 1, dstFactor, 1)
+            pq += dstId -> score
+          }
+          pq.foreach { case (dstId, score) =>
+            output(i) = (srcId, dstId, score)
+            i += 1
+          }
+          pq.clear()
+        }
+        output.toSeq
+      }
     // We'll force the IDs to be Int. Unfortunately this converts IDs to Int in the output.
     val topKAggregator = new TopByKeyAggregator[Int, Int, Float](num, Ordering.by(_._2))
     val recs = ratings.as[(Int, Int, Float)].groupByKey(_._1).agg(topKAggregator.toColumn)
@@ -387,8 +420,20 @@ class ALSModel private[ml] (
         .add(dstOutputColumn, IntegerType)
         .add("rating", FloatType)
     )
-    recs.select($"id" as srcOutputColumn, $"recommendations" cast arrayType)
+    recs.select($"id".as(srcOutputColumn), $"recommendations".cast(arrayType))
   }
+
+  /**
+   * Blockifies factors to improve the efficiency of cross join
+   * TODO: SPARK-20443 - expose blockSize as a param?
+   */
+  private def blockify(
+      factors: Dataset[(Int, Array[Float])],
+      blockSize: Int = 4096): Dataset[Seq[(Int, Array[Float])]] = {
+    import factors.sparkSession.implicits._
+    factors.mapPartitions(_.grouped(blockSize))
+  }
+
 }
 
 @Since("1.6.0")
@@ -718,11 +763,15 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
   /**
    * Representing a normal equation to solve the following weighted least squares problem:
    *
-   * minimize \sum,,i,, c,,i,, (a,,i,,^T^ x - b,,i,,)^2^ + lambda * x^T^ x.
+   * minimize \sum,,i,, c,,i,, (a,,i,,^T^ x - d,,i,,)^2^ + lambda * x^T^ x.
    *
    * Its normal equation is given by
    *
-   * \sum,,i,, c,,i,, (a,,i,, a,,i,,^T^ x - b,,i,, a,,i,,) + lambda * x = 0.
+   * \sum,,i,, c,,i,, (a,,i,, a,,i,,^T^ x - d,,i,, a,,i,,) + lambda * x = 0.
+   *
+   * Distributing and letting b,,i,, = c,,i,, * d,,i,,
+   *
+   * \sum,,i,, c,,i,, a,,i,, a,,i,,^T^ x - b,,i,, a,,i,, + lambda * x = 0.
    */
   private[recommendation] class NormalEquation(val k: Int) extends Serializable {
 
@@ -751,7 +800,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
       copyToDouble(a)
       blas.dspr(upper, k, c, da, 1, ata)
       if (b != 0.0) {
-        blas.daxpy(k, c * b, da, 1, atb, 1)
+        blas.daxpy(k, b, da, 1, atb, 1)
       }
       this
     }
@@ -1411,15 +1460,15 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
             val srcFactor = sortedSrcFactors(blockId)(localIndex)
             val rating = ratings(i)
             if (implicitPrefs) {
-              // Extension to the original paper to handle b < 0. confidence is a function of |b|
-              // instead so that it is never negative. c1 is confidence - 1.0.
+              // Extension to the original paper to handle rating < 0. confidence is a function
+              // of |rating| instead so that it is never negative. c1 is confidence - 1.
               val c1 = alpha * math.abs(rating)
-              // For rating <= 0, the corresponding preference is 0. So the term below is only added
-              // for rating > 0. Because YtY is already added, we need to adjust the scaling here.
-              if (rating > 0) {
+              // For rating <= 0, the corresponding preference is 0. So the second argument of add
+              // is only there for rating > 0.
+              if (rating > 0.0) {
                 numExplicits += 1
-                ls.add(srcFactor, (c1 + 1.0) / c1, c1)
               }
+              ls.add(srcFactor, if (rating > 0.0) 1.0 + c1 else 0.0, c1)
             } else {
               ls.add(srcFactor, rating)
               numExplicits += 1

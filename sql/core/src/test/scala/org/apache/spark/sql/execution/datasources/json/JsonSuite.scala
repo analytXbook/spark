@@ -20,6 +20,7 @@ package org.apache.spark.sql.execution.datasources.json
 import java.io.{File, StringWriter}
 import java.nio.charset.StandardCharsets
 import java.sql.{Date, Timestamp}
+import java.util.Locale
 
 import com.fasterxml.jackson.core.JsonFactory
 import org.apache.hadoop.fs.{Path, PathFilter}
@@ -1803,7 +1804,7 @@ class JsonSuite extends QueryTest with SharedSQLContext with TestJsonData {
 
       assert(new File(path).listFiles().exists(_.getName.endsWith(".gz")))
 
-      val jsonDF = spark.read.option("wholeFile", true).json(path)
+      val jsonDF = spark.read.option("multiLine", true).json(path)
       val jsonDir = new File(dir, "json").getCanonicalPath
       jsonDF.coalesce(1).write
         .option("compression", "gZiP")
@@ -1825,7 +1826,7 @@ class JsonSuite extends QueryTest with SharedSQLContext with TestJsonData {
         .write
         .text(path)
 
-      val jsonDF = spark.read.option("wholeFile", true).json(path)
+      val jsonDF = spark.read.option("multiLine", true).json(path)
       val jsonDir = new File(dir, "json").getCanonicalPath
       jsonDF.coalesce(1).write.json(jsonDir)
 
@@ -1854,7 +1855,7 @@ class JsonSuite extends QueryTest with SharedSQLContext with TestJsonData {
         .write
         .text(path)
 
-      val jsonDF = spark.read.option("wholeFile", true).json(path)
+      val jsonDF = spark.read.option("multiLine", true).json(path)
       // no corrupt record column should be created
       assert(jsonDF.schema === StructType(Seq()))
       // only the first object should be read
@@ -1875,7 +1876,7 @@ class JsonSuite extends QueryTest with SharedSQLContext with TestJsonData {
         .write
         .text(path)
 
-      val jsonDF = spark.read.option("wholeFile", true).option("mode", "PERMISSIVE").json(path)
+      val jsonDF = spark.read.option("multiLine", true).option("mode", "PERMISSIVE").json(path)
       assert(jsonDF.count() === corruptRecordCount)
       assert(jsonDF.schema === new StructType()
         .add("_corrupt_record", StringType)
@@ -1906,7 +1907,7 @@ class JsonSuite extends QueryTest with SharedSQLContext with TestJsonData {
         .write
         .text(path)
 
-      val jsonDF = spark.read.option("wholeFile", true).option("mode", "DROPMALFORMED").json(path)
+      val jsonDF = spark.read.option("multiLine", true).option("mode", "DROPMALFORMED").json(path)
       checkAnswer(jsonDF, Seq(Row("test")))
     }
   }
@@ -1929,7 +1930,7 @@ class JsonSuite extends QueryTest with SharedSQLContext with TestJsonData {
       // `FAILFAST` mode should throw an exception for corrupt records.
       val exceptionOne = intercept[SparkException] {
         spark.read
-          .option("wholeFile", true)
+          .option("multiLine", true)
           .option("mode", "FAILFAST")
           .json(path)
       }
@@ -1937,7 +1938,7 @@ class JsonSuite extends QueryTest with SharedSQLContext with TestJsonData {
 
       val exceptionTwo = intercept[SparkException] {
         spark.read
-          .option("wholeFile", true)
+          .option("multiLine", true)
           .option("mode", "FAILFAST")
           .schema(schema)
           .json(path)
@@ -1976,6 +1977,45 @@ class JsonSuite extends QueryTest with SharedSQLContext with TestJsonData {
           .collect
       }.getMessage
       assert(errMsg.startsWith("The field for corrupt records must be string type and nullable"))
+    }
+  }
+
+  test("SPARK-18772: Parse special floats correctly") {
+    val jsons = Seq(
+      """{"a": "NaN"}""",
+      """{"a": "Infinity"}""",
+      """{"a": "-Infinity"}""")
+
+    // positive cases
+    val checks: Seq[Double => Boolean] = Seq(
+      _.isNaN,
+      _.isPosInfinity,
+      _.isNegInfinity)
+
+    Seq(FloatType, DoubleType).foreach { dt =>
+      jsons.zip(checks).foreach { case (json, check) =>
+        val ds = spark.read
+          .schema(StructType(Seq(StructField("a", dt))))
+          .json(Seq(json).toDS())
+          .select($"a".cast(DoubleType)).as[Double]
+        assert(check(ds.first()))
+      }
+    }
+
+    // negative cases
+    Seq(FloatType, DoubleType).foreach { dt =>
+      val lowerCasedJsons = jsons.map(_.toLowerCase(Locale.ROOT))
+      // The special floats are case-sensitive so these cases below throw exceptions.
+      lowerCasedJsons.foreach { lowerCasedJson =>
+        val e = intercept[SparkException] {
+          spark.read
+            .option("mode", "FAILFAST")
+            .schema(StructType(Seq(StructField("a", dt))))
+            .json(Seq(lowerCasedJson).toDS())
+            .collect()
+        }
+        assert(e.getMessage.contains("Cannot parse"))
+      }
     }
   }
 }

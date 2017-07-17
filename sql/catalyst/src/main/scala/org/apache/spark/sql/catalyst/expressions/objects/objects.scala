@@ -451,6 +451,8 @@ object MapObjects {
    * @param function The function applied on the collection elements.
    * @param inputData An expression that when evaluated returns a collection object.
    * @param elementType The data type of elements in the collection.
+   * @param elementNullable When false, indicating elements in the collection are always
+   *                        non-null value.
    * @param customCollectionCls Class of the resulting collection (returning ObjectType)
    *                            or None (returning ArrayType)
    */
@@ -458,11 +460,12 @@ object MapObjects {
       function: Expression => Expression,
       inputData: Expression,
       elementType: DataType,
+      elementNullable: Boolean = true,
       customCollectionCls: Option[Class[_]] = None): MapObjects = {
     val id = curId.getAndIncrement()
     val loopValue = s"MapObjects_loopValue$id"
     val loopIsNull = s"MapObjects_loopIsNull$id"
-    val loopVar = LambdaVariable(loopValue, loopIsNull, elementType)
+    val loopVar = LambdaVariable(loopValue, loopIsNull, elementType, elementNullable)
     MapObjects(
       loopValue, loopIsNull, elementType, function(loopVar), inputData, customCollectionCls)
   }
@@ -726,6 +729,12 @@ case class ExternalMapToCatalyst private(
     val entry = ctx.freshName("entry")
     val entries = ctx.freshName("entries")
 
+    val keyElementJavaType = ctx.javaType(keyType)
+    val valueElementJavaType = ctx.javaType(valueType)
+    ctx.addMutableState(keyElementJavaType, key, "")
+    ctx.addMutableState("boolean", valueIsNull, "")
+    ctx.addMutableState(valueElementJavaType, value, "")
+
     val (defineEntries, defineKeyValue) = child.dataType match {
       case ObjectType(cls) if classOf[java.util.Map[_, _]].isAssignableFrom(cls) =>
         val javaIteratorCls = classOf[java.util.Iterator[_]].getName
@@ -737,8 +746,8 @@ case class ExternalMapToCatalyst private(
         val defineKeyValue =
           s"""
             final $javaMapEntryCls $entry = ($javaMapEntryCls) $entries.next();
-            ${ctx.javaType(keyType)} $key = (${ctx.boxedType(keyType)}) $entry.getKey();
-            ${ctx.javaType(valueType)} $value = (${ctx.boxedType(valueType)}) $entry.getValue();
+            $key = (${ctx.boxedType(keyType)}) $entry.getKey();
+            $value = (${ctx.boxedType(valueType)}) $entry.getValue();
           """
 
         defineEntries -> defineKeyValue
@@ -752,17 +761,17 @@ case class ExternalMapToCatalyst private(
         val defineKeyValue =
           s"""
             final $scalaMapEntryCls $entry = ($scalaMapEntryCls) $entries.next();
-            ${ctx.javaType(keyType)} $key = (${ctx.boxedType(keyType)}) $entry._1();
-            ${ctx.javaType(valueType)} $value = (${ctx.boxedType(valueType)}) $entry._2();
+            $key = (${ctx.boxedType(keyType)}) $entry._1();
+            $value = (${ctx.boxedType(valueType)}) $entry._2();
           """
 
         defineEntries -> defineKeyValue
     }
 
     val valueNullCheck = if (ctx.isPrimitiveType(valueType)) {
-      s"boolean $valueIsNull = false;"
+      s"$valueIsNull = false;"
     } else {
-      s"boolean $valueIsNull = $value == null;"
+      s"$valueIsNull = $value == null;"
     }
 
     val arrayCls = classOf[GenericArrayData].getName

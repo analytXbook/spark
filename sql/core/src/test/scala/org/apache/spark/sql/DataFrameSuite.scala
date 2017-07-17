@@ -1722,4 +1722,35 @@ class DataFrameSuite extends QueryTest with SharedSQLContext {
         "Cannot have map type columns in DataFrame which calls set operations"))
     }
   }
+
+  test("SPARK-20359: catalyst outer join optimization should not throw npe") {
+    val df1 = Seq("a", "b", "c").toDF("x")
+      .withColumn("y", udf{ (x: String) => x.substring(0, 1) + "!" }.apply($"x"))
+    val df2 = Seq("a", "b").toDF("x1")
+    df1
+      .join(df2, df1("x") === df2("x1"), "left_outer")
+      .filter($"x1".isNotNull || !$"y".isin("a!"))
+      .count
+  }
+
+  testQuietly("SPARK-19372: Filter can be executed w/o generated code due to JVM code size limit") {
+    val N = 400
+    val rows = Seq(Row.fromSeq(Seq.fill(N)("string")))
+    val schema = StructType(Seq.tabulate(N)(i => StructField(s"_c$i", StringType)))
+    val df = spark.createDataFrame(spark.sparkContext.makeRDD(rows), schema)
+
+    val filter = (0 until N)
+      .foldLeft(lit(false))((e, index) => e.or(df.col(df.columns(index)) =!= "string"))
+    df.filter(filter).count
+  }
+
+  test("SPARK-20897: cached self-join should not fail") {
+    // force to plan sort merge join
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0") {
+      val df = Seq(1 -> "a").toDF("i", "j")
+      val df1 = df.as("t1")
+      val df2 = df.as("t2")
+      assert(df1.join(df2, $"t1.i" === $"t2.i").cache().count() == 1)
+    }
+  }
 }

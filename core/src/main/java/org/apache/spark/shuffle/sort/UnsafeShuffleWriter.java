@@ -353,8 +353,9 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       }
       for (int partition = 0; partition < numPartitions; partition++) {
         final long initialFileLength = mergedFileOutputStream.getByteCount();
-        // Shield the underlying output stream from close() calls, so that we can close the higher
-        // level streams to make sure all data is really flushed and internal state is cleaned.
+        // Shield the underlying output stream from close() calls, so that we can close
+        // the higher level streams to make sure all data is really flushed and internal state is
+        // cleaned.
         OutputStream partitionOutput = new CloseShieldOutputStream(
           new TimeTrackingOutputStream(writeMetrics, mergedFileOutputStream));
         partitionOutput = blockManager.serializerManager().wrapForEncryption(partitionOutput);
@@ -422,17 +423,14 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       for (int partition = 0; partition < numPartitions; partition++) {
         for (int i = 0; i < spills.length; i++) {
           final long partitionLengthInSpill = spills[i].partitionLengths[partition];
-          long bytesToTransfer = partitionLengthInSpill;
           final FileChannel spillInputChannel = spillInputChannels[i];
           final long writeStartTime = System.nanoTime();
-          while (bytesToTransfer > 0) {
-            final long actualBytesTransferred = spillInputChannel.transferTo(
-              spillInputChannelPositions[i],
-              bytesToTransfer,
-              mergedFileOutputChannel);
-            spillInputChannelPositions[i] += actualBytesTransferred;
-            bytesToTransfer -= actualBytesTransferred;
-          }
+          Utils.copyFileStreamNIO(
+            spillInputChannel,
+            mergedFileOutputChannel,
+            spillInputChannelPositions[i],
+            partitionLengthInSpill);
+          spillInputChannelPositions[i] += partitionLengthInSpill;
           writeMetrics.incWriteTime(System.nanoTime() - writeStartTime);
           bytesWrittenToMergedFile += partitionLengthInSpill;
           partitionLengths[partition] += partitionLengthInSpill;
