@@ -384,7 +384,7 @@ private[spark] class FlareReservationManager(
 
   def handleTaskGettingResult(taskId: Long): Unit = {
     val info = taskInfos(taskId)
-    info.markGettingResult()
+    info.markGettingResult(clock.getTimeMillis())
     scheduler.dagScheduler.taskGettingResult(info)
   }
 
@@ -397,7 +397,7 @@ private[spark] class FlareReservationManager(
   def handleSuccessfulTask(taskId: Long, result: DirectTaskResult[_]) = {
     val taskInfo = taskInfos(taskId)
     val index = taskInfo.index
-    taskInfo.markFinished(TaskState.FINISHED)
+    taskInfo.markFinished(TaskState.FINISHED, clock.getTimeMillis())
     removeRunningTask(taskId)
 
     scheduler.dagScheduler.taskEnded(
@@ -427,7 +427,7 @@ private[spark] class FlareReservationManager(
       return Map.empty
     }
     removeRunningTask(taskId)
-    taskInfo.markFinished(state)
+    taskInfo.markFinished(state, clock.getTimeMillis())
 
     var accumUpdates: Seq[AccumulatorV2[_, _]] = Seq.empty
     val failureReason = s"Lost task ${taskInfo.id} in stage ${taskSet.id} (TID $taskId, ${taskInfo.host}): " +
@@ -568,7 +568,7 @@ private[spark] class FlareReservationManager(
       taskAttempts(index) = info :: taskAttempts(index)
       
       val serializedTask: ByteBuffer = try {
-        Task.serializeWithDependencies(task, scheduler.sc.addedFiles, scheduler.sc.addedJars, ser)
+        ser.serialize(task)
       } catch {
         case NonFatal(e) => {
           val msg = s"Failed to serialize task $taskId, not attempting to retry it."
@@ -583,7 +583,7 @@ private[spark] class FlareReservationManager(
             s"$taskLocality, ${serializedTask.limit} bytes)")
       
       scheduler.dagScheduler.taskStarted(task, info)
-      new TaskDescription(taskId, attemptNumber, executorId, taskName, index, serializedTask)
+      new TaskDescription(taskId, attemptNumber, executorId, taskName, index, scheduler.sc.addedFiles, scheduler.sc.addedJars, task.localProperties, serializedTask)
     }
   }
 

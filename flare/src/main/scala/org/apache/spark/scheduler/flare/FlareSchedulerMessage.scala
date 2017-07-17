@@ -28,7 +28,7 @@ private[spark] object FlareMessages {
 
   case class AllocateIds(idGroup: String, isInt: Boolean, driverId: Int) extends FlareMessage
 
-  case class KillTask(taskId: Long, executorId: String, interruptThread: Boolean) extends FlareMessage
+  case class KillTask(taskId: Long, executorId: String, interruptThread: Boolean, reason: String) extends FlareMessage
 
   case class StatusUpdate(
       executorId: String,

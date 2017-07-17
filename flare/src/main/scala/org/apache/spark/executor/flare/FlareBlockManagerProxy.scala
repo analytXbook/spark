@@ -55,7 +55,7 @@ private[spark] class FlareBlockManagerProxy(
   }
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
-    case _registerBlockManager @ RegisterBlockManager(blockManagerId, maxMemSize, slaveEndpoint) => {
+    case _registerBlockManager @ RegisterBlockManager(blockManagerId, maxOnHeapMemSize, maxOffHeapMemSize, slaveEndpoint) => {
       if (!capturedRegistration.isDefined) {
         logInfo(s"Initializing FlareBlockManagerProxy")
         capturedRegistration = Some(_registerBlockManager)

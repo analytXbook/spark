@@ -93,12 +93,7 @@ private[spark] class FlareExecutorRunner(
 
       process.destroy()
 
-      val exitCode = if (Utils.waitForProcess(process, EXECUTOR_TERMINATE_TIMEOUT_MS)) {
-        Some(process.exitValue())
-      } else {
-        logWarning(s"Failed to terminate process executor $executorId gracefully. This process may become orphaned.")
-        None
-      }
+      val exitCode = Utils.terminateProcess(process, EXECUTOR_TERMINATE_TIMEOUT_MS)
 
       node.onExecutorStateChanged(executorId, state, message, exitCode)
     }

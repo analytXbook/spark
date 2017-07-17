@@ -85,8 +85,8 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
     }
   }
 
-  override def killTask(taskId: Long, executorId: String, interruptThread: Boolean) = {
-    driverEndpoint.send(KillTask(taskId, executorId, interruptThread))
+  override def killTask(taskId: Long, executorId: String, interruptThread: Boolean, reason: String) = {
+    driverEndpoint.send(KillTask(taskId, executorId, interruptThread, reason))
   }
  
   private class DriverEndpoint(override val rpcEnv: RpcEnv)
@@ -100,7 +100,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
       case StatusUpdate(executorId, taskId, state, data) => 
         scheduler.statusUpdate(taskId, state, data.value)
 
-      case killTaskMsg @ KillTask(taskId, executorId, interruptThread) => {
+      case killTaskMsg @ KillTask(taskId, executorId, interruptThread, reason) => {
         executors.get(executorId) match {
           case Some(executorInfo) => 
             executorInfo.executorEndpoint.send(killTaskMsg)

@@ -48,11 +48,11 @@ private[spark] class FlareIdGroup(idGroup: String, isInt: Boolean, backend: Flar
       case None => {
         pendingFetch match {
           case Some(promise) => {
-            val range = Await.result(promise.future, 1 minute)
+            val range = Await.result(promise.future, Duration(1, MINUTES))
             readyRange = None
             range
           }
-          case None => Await.result(fetchNextRange(), 1 minute)
+          case None => Await.result(fetchNextRange(), Duration(1, MINUTES))
         }
       }
     }

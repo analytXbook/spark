@@ -148,6 +148,18 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
     }
   }
 
+  override def killTaskAttempt(taskId: Long, interruptThread: Boolean, reason: String): Boolean = {
+    logInfo(s"Killing task $taskId: $reason")
+    val executorId = taskIdToExecutor.get(taskId)
+    if (executorId.isDefined) {
+      backend.killTask(taskId, executorId.get, interruptThread, reason)
+      true
+    } else {
+      logWarning(s"Could not kill task $taskId because no task with that ID was found.")
+      false
+    }
+  }
+
   def isMaxParallelism(stageId: Int, stageAttemptId: Int): Boolean =
     managersByStageIdAndAttempt(stageId)(stageAttemptId).isMaxParallelism
 
@@ -206,7 +218,7 @@ private[spark] class FlareScheduler(val sc: SparkContext) extends TaskScheduler 
       attempts.foreach { case (_, manager) =>
         manager.runningTasks.foreach { taskId =>
           val executorId = taskIdToExecutor(taskId)
-          backend.killTask(taskId, executorId, interruptThread)
+          backend.killTask(taskId, executorId, interruptThread, "stage cancelled")
         }
 
         manager.abort("Stage %s cancelled".format(stageId))

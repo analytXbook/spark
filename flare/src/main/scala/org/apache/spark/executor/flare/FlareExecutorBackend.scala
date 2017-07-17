@@ -72,15 +72,15 @@ private[spark] class FlareExecutorBackend(
   private def cancelReservation(reservationId: FlareReservationId) = {
     logDebug(s"Cancelling reservation $reservationId")
 
-    reservationTasks.get(reservationId).foreach(_.foreach(killTask(_, false)))
+    reservationTasks.get(reservationId).foreach(_.foreach(killTask(_, false, "reservation cancelled")))
 
     poolBackend.removeReservation(reservationId)
 
     attemptLaunchReservation()
   }
 
-  private def killTask(taskId: Long, interrupt: Boolean) = {
-    executor.killTask(taskId, interrupt)
+  private def killTask(taskId: Long, interrupt: Boolean, reason: String) = {
+    executor.killTask(taskId, interrupt, reason)
   }
 
   private def scheduleAttemptLaunchReservation(): Unit = {
@@ -117,11 +117,11 @@ private[spark] class FlareExecutorBackend(
           val taskDesc = ser.deserialize[TaskDescription](taskData.value)
           taskToReservationId(taskDesc.taskId) = reservationId
           reservationTasks.addBinding(reservationId, taskDesc.taskId)
-          executor.launchTask(this, taskDesc.taskId, taskDesc.attemptNumber, taskDesc.name, taskDesc.serializedTask)
+          executor.launchTask(this, taskDesc)
           poolBackend.taskLaunched(reservationId)
         case _ =>
       }
-      case Failure(failure) =>
+      case Failure(ex) =>
         redemptionRejected(reservationId)
         attemptLaunchReservation()
     }
@@ -133,7 +133,7 @@ private[spark] class FlareExecutorBackend(
   
   override def onStart() = {
     cluster.addListener(this)
-    proxyRef.askWithRetry[RegisteredExecutorResponse](RegisterExecutor(executorId, self, cores, Map.empty)) match {
+    proxyRef.askSync[RegisteredExecutorResponse](RegisterExecutor(executorId, self, cores, Map.empty)) match {
       case RegisteredExecutor => {
         executor = new Executor(executorId, hostname, env, List.empty, isLocal = false)
       }
