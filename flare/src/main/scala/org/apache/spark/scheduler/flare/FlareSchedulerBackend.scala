@@ -132,7 +132,7 @@ private[spark] class FlareSchedulerBackend(scheduler: FlareScheduler, flareUrl: 
       case RedeemReservation(FlareReservationId(stageId, attemptId, _), executorId, host) => {
         scheduler.redeemReservation(stageId, attemptId, executorId, host) match {
           case Some(task) => {
-            val serializedTask = ser.serialize(task)
+            val serializedTask = TaskDescription.encode(task)
             /*
             if (serializedTask.limit >= akkaFrameSize - AkkaUtils.reservedSizeBytes) {
               scheduler.taskIdToTaskSetManager.get(task.taskId).foreach { taskSetMgr =>

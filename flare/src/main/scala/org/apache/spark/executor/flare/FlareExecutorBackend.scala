@@ -114,7 +114,7 @@ private[spark] class FlareExecutorBackend(
           redemptionRejected(reservationId)
           attemptLaunchReservation()
         case LaunchTaskReservationResponse(taskData) => 
-          val taskDesc = ser.deserialize[TaskDescription](taskData.value)
+          val taskDesc = TaskDescription.decode(taskData.value)
           taskToReservationId(taskDesc.taskId) = reservationId
           reservationTasks.addBinding(reservationId, taskDesc.taskId)
           executor.launchTask(this, taskDesc)
