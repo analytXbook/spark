@@ -22,4 +22,8 @@ package org.apache.spark.sql
  * considered an internal API to Spark SQL and are subject to change between minor releases.
  */
 package object catalyst {
+  /**
+    * A fix for Spark Cassandra connector as it is not compatible with Sprk v2.3
+    */
+  protected[sql] object ScalaReflectionLock
 }
